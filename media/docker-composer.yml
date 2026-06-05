@@ -9,9 +9,9 @@ x-common-keys: &common-keys
     #logging:
       #driver: json-file
     environment:
-      PUID: ${PUID}
-      PGID: ${PGID}
-      TZ: ${TZ}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-America/Campo_Grande}
     #dns:
       #- 1.1.1.1
       #- 1.0.0.1
@@ -19,9 +19,9 @@ x-common-keys: &common-keys
 networks:
   servarr_network:
     name: servarr_network
-    #ipam:
-      #config:
-        #- subnet: 192.168.1.0/24
+    ipam:
+      config:
+        - subnet: ${SERVARR_SUBNET:-172.31.0.0/24}
 
 services:
 ###############################################
@@ -30,36 +30,34 @@ services:
   gluetun:
     image: qmcgaw/gluetun
     container_name: gluetun
+    restart: unless-stopped
     cap_add:
       - NET_ADMIN
-    #devices:
-      #- /dev/net/tun:/dev/net/tun
-    #networks:
-      #servarr_network:
-        #ipv4_address: ${SET_IP_GLUETUN}
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_GLUETUN:-172.31.0.2}
     ports:
       - 8080:8080 # qbittorrent web interface
       - 6881:6881 # qbittorrent torrent port
-      - 9443:9443 # portainer
+      - 6881:6881/udp # qbittorrent torrent port
       - 9696:9696 # prowlarr
-      - 8191:8191 # flaresolverr
-      # radarr
-      # sonarr
-      # bazarr
     volumes:
       - /docker/gluetun:/gluetun
     environment:
-      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
-      - VPN_TYPE=${VPN_TYPE}
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-mullvad}
+      - VPN_TYPE=${VPN_TYPE:-wireguard}
       # OpenVPN:
       #- OPENVPN_USER=${OPENVPN_USER}
       #- OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
-      - Wireguard:
-        - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
-      # - WIREGUARD_ADDRESSES=10.64.222.21/32
+      # Wireguard:
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:?Set WIREGUARD_PRIVATE_KEY in your environment or .env file}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:?Set WIREGUARD_ADDRESSES in your environment or .env file}
+      - SERVER_COUNTRIES=${SERVER_COUNTRIES:-Brazil}
     healthcheck:
-      test: ping -c 1 www.google.com || exit 1
-      interval: ${HEALTH_VPN_DURATION_INITIAL}
+      test: ["CMD-SHELL", "wget -qO- https://ipinfo.io/ip || exit 1"]
+      interval: ${HEALTH_VPN_DURATION_INITIAL:-30s}
       timeout: 20s
       retries: 5
 
@@ -70,6 +68,8 @@ services:
     <<: *common-keys
     container_name: radarr
     image: ghcr.io/hotio/radarr:latest
+    networks:
+      - servarr_network
     ports:
       - 7878:7878
     volumes:
@@ -84,6 +84,8 @@ services:
     <<: *common-keys
     container_name: sonarr
     image: ghcr.io/hotio/sonarr:latest
+    networks:
+      - servarr_network
     ports:
       - 8989:8989
     volumes:
@@ -98,6 +100,8 @@ services:
     <<: *common-keys
     container_name: bazarr
     image: ghcr.io/hotio/bazarr:latest
+    networks:
+      - servarr_network
     ports:
       - 6767:6767
     volumes:
@@ -112,8 +116,6 @@ services:
     <<: *common-keys
     container_name: prowlarr
     image: ghcr.io/hotio/prowlarr:latest
-    ports:
-      - 9696:9696
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /docker/appdata/prowlarr:/config
@@ -126,13 +128,12 @@ services:
     <<: *common-keys
     container_name: qbittorrent
     image: ghcr.io/hotio/qbittorrent:latest
-    ports:
-      - 8080:8080
-      - 6881:6881
-      - 6881:6881/udp
     environment:
-      - WEBUI_PORT=8080
-      - TORRENTING_PORT=6881
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-America/Campo_Grande}
+      WEBUI_PORT: 8080
+      TORRENTING_PORT: 6881
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /docker/appdata/qbittorrent:/config

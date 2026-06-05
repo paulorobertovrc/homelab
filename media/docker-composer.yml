@@ -1,0 +1,140 @@
+# SERVARR
+# Compose file for the Arr Stack
+
+###############################################
+# Common and Network Settings
+###############################################
+x-common-keys: &common-keys
+    restart: unless-stopped
+    #logging:
+      #driver: json-file
+    environment:
+      PUID: ${PUID}
+      PGID: ${PGID}
+      TZ: ${TZ}
+    #dns:
+      #- 1.1.1.1
+      #- 1.0.0.1
+
+networks:
+  servarr_network:
+    name: servarr_network
+    #ipam:
+      #config:
+        #- subnet: 192.168.1.0/24
+
+services:
+###############################################
+# GLUETUN - VPN
+###############################################
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    #devices:
+      #- /dev/net/tun:/dev/net/tun
+    #networks:
+      #servarr_network:
+        #ipv4_address: ${SET_IP_GLUETUN}
+    ports:
+      - 8080:8080 # qbittorrent web interface
+      - 6881:6881 # qbittorrent torrent port
+      - 9443:9443 # portainer
+      - 9696:9696 # prowlarr
+      - 8191:8191 # flaresolverr
+      # radarr
+      # sonarr
+      # bazarr
+    volumes:
+      - /docker/gluetun:/gluetun
+    environment:
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - VPN_TYPE=${VPN_TYPE}
+      # OpenVPN:
+      #- OPENVPN_USER=${OPENVPN_USER}
+      #- OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
+      - Wireguard:
+        - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      # - WIREGUARD_ADDRESSES=10.64.222.21/32
+    healthcheck:
+      test: ping -c 1 www.google.com || exit 1
+      interval: ${HEALTH_VPN_DURATION_INITIAL}
+      timeout: 20s
+      retries: 5
+
+###############################################
+# RADARR - Movies
+###############################################
+  radarr:
+    <<: *common-keys
+    container_name: radarr
+    image: ghcr.io/hotio/radarr:latest
+    ports:
+      - 7878:7878
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /docker/appdata/radarr:/config
+      - /data:/data
+
+###############################################
+# SONARR - TV Shows
+###############################################
+  sonarr:
+    <<: *common-keys
+    container_name: sonarr
+    image: ghcr.io/hotio/sonarr:latest
+    ports:
+      - 8989:8989
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /docker/appdata/sonarr:/config
+      - /data:/data
+
+###############################################
+# BAZARR - Subtitles
+###############################################
+  bazarr:
+    <<: *common-keys
+    container_name: bazarr
+    image: ghcr.io/hotio/bazarr:latest
+    ports:
+      - 6767:6767
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /docker/appdata/bazarr:/config
+      - /data/media:/data/media
+
+###############################################
+# PROWLARR - Indexer Manager
+###############################################
+  prowlarr:
+    <<: *common-keys
+    container_name: prowlarr
+    image: ghcr.io/hotio/prowlarr:latest
+    ports:
+      - 9696:9696
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /docker/appdata/prowlarr:/config
+    network_mode: service:gluetun
+
+###############################################
+# QBITTORRENT - Downloader
+###############################################
+  qbittorrent:
+    <<: *common-keys
+    container_name: qbittorrent
+    image: ghcr.io/hotio/qbittorrent:latest
+    ports:
+      - 8080:8080
+      - 6881:6881
+      - 6881:6881/udp
+    environment:
+      - WEBUI_PORT=8080
+      - TORRENTING_PORT=6881
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /docker/appdata/qbittorrent:/config
+      - /data:/data
+    network_mode: service:gluetun

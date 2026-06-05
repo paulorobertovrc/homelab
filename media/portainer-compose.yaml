@@ -1,0 +1,13 @@
+###############################################
+# PORTAINER - Container Management
+###############################################
+  portainer:
+    <<: *common-keys
+    container_name: portainer
+    image: portainer/portainer-ce:lts
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /docker/appdata/portainer:/config
+      - /docker/appdata/portainer_data:/data
+    ports:
+      - 9443:9443

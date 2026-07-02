@@ -136,6 +136,21 @@ services:
       - ${LIBRARY:-/mnt/f/Media}:/data/media          # F: (write library -> "/data/media/TV Shows")
 
   ###############################################
+  # FLARESOLVERR — Cloudflare-bypass proxy for Prowlarr indexers
+  # (needed by 1337x, EZTV; not by YTS/TPB/LimeTorrents)
+  ###############################################
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_FLARESOLVERR:-172.39.0.5}
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+      - LOG_LEVEL=info
+
+  ###############################################
   # BAZARR — subtitles (reads the library only)
   ###############################################
   bazarr:

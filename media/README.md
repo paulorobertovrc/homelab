@@ -11,9 +11,10 @@ host (Windows, Plex, your browsing, other containers) touches it.
 
 | Component | Egress path |
 |---|---|
-| **qBittorrent** | 🔒 Mullvad (`network_mode: service:gluetun`) |
-| **Prowlarr** | 🔒 Mullvad (`network_mode: service:gluetun`) |
+| **qBittorrent** | 🔒 NordVPN (`network_mode: service:gluetun`) |
+| **Prowlarr** | 🔒 NordVPN (`network_mode: service:gluetun`) |
 | Radarr / Sonarr / Bazarr | 🌐 normal network (talk to TMDB/TVDB metadata; reach qbit/prowlarr through gluetun) |
+| FlareSolverr | 🌐 normal network — **not tunneled**. It fetches 1337x/EZTV pages on Prowlarr's behalf from its own (non-VPN) IP. Only qBittorrent's actual downloads and Prowlarr's own egress are VPN'd. |
 | **Host + Plex + everything else** | 🌐 normal network |
 
 If gluetun's tunnel drops, its firewall blocks **all** egress from qbit/prowlarr →
@@ -55,43 +56,64 @@ container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.
 
 ---
 
-## Finish setup (2 steps)
+## Current state (fully wired, verified live)
 
-1. **Paste your NordVPN NordLynx private key** into `media/.env` at the empty
-   `WIREGUARD_PRIVATE_KEY=` under the "NordVPN active" marker. Get it with either:
-   - **CLI (session key):** `nordvpn connect Brazil && sudo wg show nordlynx private-key && nordvpn disconnect`
-   - **API (stable account key, preferred):** generate an access token in your Nord
-     Account, then
-     `curl -s -u token:YOUR_TOKEN https://api.nordvpn.com/v1/users/services/credentials | jq -r .nordlynx_private_key`
+Everything below was configured end‑to‑end via each app's API and verified with real
+requests — not just "should work."
 
-   (NordVPN needs no `WIREGUARD_ADDRESSES` — gluetun sets it automatically.)
+- **qBittorrent** (`:8090`): permanent WebUI password set (was: regenerating temp
+  password). Categories `radarr`/`sonarr` created; save path `/data/torrents/complete`,
+  incomplete `/data/torrents/incomplete`. Host header validation disabled
+  (`WebUI\HostHeaderValidation=false`) — required because the WebUI is remapped
+  (host 8090 → container 8080; host 8080 was taken on Windows) and qBittorrent
+  otherwise 401s on the port mismatch.
+- **Radarr** (`:7878`): root folder `/data/media/Movies` (already sees the existing
+  library — **not yet imported**, see below). Download client qBittorrent
+  (`172.39.0.2:8080`, category `radarr`) added and connection‑tested OK.
+- **Sonarr** (`:8989`): root folder `/data/media/TV Shows`, same download client
+  wiring (category `sonarr`), tested OK.
+- **Prowlarr** (`:9696`): registered as an Application against both Radarr
+  (`http://172.39.0.4:7878`) and Sonarr (`http://172.39.0.3:8989`) — connection
+  tested OK both ways.
+- **Bazarr** (`:6767`): connected to Radarr (`172.39.0.4:7878`) and Sonarr
+  (`172.39.0.3:8989`); SignalR live‑sync confirmed connected to both.
+- **Indexers** (public, no login) — added via Prowlarr, live search verified
+  (143 real results for a test query):
+  | Indexer | Status |
+  |---|---|
+  | YTS | ✅ working |
+  | The Pirate Bay | ✅ working |
+  | LimeTorrents | ✅ working |
+  | 1337x | ⚠️ added but **fails** — see below |
+  | EZTV | ⚠️ added but **fails** — see below |
 
-2. **Start it** (from `media/`):
-   ```bash
-   docker compose up -d
-   docker compose logs -f gluetun     # wait for "healthy" / an IP
-   ```
-   qbit/prowlarr only start once gluetun is healthy (by design).
+### FlareSolverr (Cloudflare bypass) — partial
 
-## First‑run app config
+`1337x.to` and `eztvx.to` sit behind Cloudflare, so a **FlareSolverr** container was
+added (`172.39.0.5:8191`, tagged so only these two indexers route through it).
+Root‑caused via Prowlarr's debug log: FlareSolverr *does* solve the JS challenge
+(confirmed in its own log: `Challenge solved!`, 200 OK, ~12–14s) and Prowlarr *does*
+wait for and receive that full response — but still classifies it as blocked. This
+means the returned page still carries Cloudflare markers Prowlarr's Cardigann parser
+rejects, i.e. these two sites currently have a protection layer FlareSolverr 3.5.0
+alone doesn't fully clear. This is a **known external limitation** (site hardening,
+not a stack misconfiguration) — not something to keep patching blindly. Options if you
+want them working later: retry occasionally (sites' protection level changes), or add
+a residential-proxy‑backed alternative. Left both indexers enabled in Prowlarr in case
+a future FlareSolverr/site change fixes it on its own.
 
-- **qBittorrent** (`:8090`, temp password in `docker logs qbittorrent`):
-  Save path `/data/torrents/complete`, incomplete `/data/torrents/incomplete`.
-  Set a permanent password (Options → WebUI) — the temp one regenerates every restart.
-  Note: because the WebUI is remapped (host 8090 → container 8080), qBittorrent's
-  **Host header validation is disabled** (`WebUI\HostHeaderValidation=false` in its
-  config) — otherwise it returns `401 Unauthorized` on the port mismatch.
-- **Prowlarr** (`:9696`): add indexers; Settings → Apps → add Radarr `http://172.39.0.4:7878`
-  and Sonarr `http://172.39.0.3:8989`.
-- **Radarr** (`:7878`): root folder `/data/media/Movies`; download client qBittorrent
-  host `172.39.0.2` port `8080` (paths already match — no remote path mapping).
-- **Sonarr** (`:8989`): root folder `/data/media/TV Shows`; same download client.
-- **Bazarr** (`:6767`): connect Radarr `172.39.0.4:7878` + Sonarr `172.39.0.3:8989`.
-- **Plex (Windows)**: libraries point to `F:\Media\Movies` and `F:\Media\TV Shows`.
+### Not yet done (needs your review, not automatable)
 
-## Verify no leak (after it's up)
+**Library import**: Radarr/Sonarr already see the existing files in `F:\Media\Movies`
+and `F:\Media\TV Shows` as *unmapped folders*, but haven't added them to their library
+yet (0 movies/series tracked). Importing means matching each folder to the correct
+TMDB/TVDB entry — a content decision, not run automatically. In each app:
+**Library → Import** (or **Movies/Series → Add New → Import Existing**), review the
+matches, confirm.
+
+## Verify no leak
 
 ```bash
-docker exec qbittorrent wget -qO- https://ipinfo.io/ip   # -> a Mullvad IP
-curl -s https://ipinfo.io/ip                             # -> your real IP (host is NOT on VPN)
+docker exec qbittorrent wget -qO- https://ipinfo.io/ip   # -> a NordVPN Brazil IP
+curl -s https://ipinfo.io/ip                             # -> your real ISP IP (host is NOT on VPN)
 ```

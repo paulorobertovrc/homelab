@@ -112,6 +112,36 @@ TMDB/TVDB entry — a content decision, not run automatically. In each app:
 **Library → Import** (or **Movies/Series → Add New → Import Existing**), review the
 matches, confirm.
 
+## Extras / operations
+
+- **Backups** — `scripts/arr-backup.sh` via systemd timer `arr-backup.timer` (daily
+  04:30, `Persistent=true`). Tars `/docker/appdata` → `D:\backups\arr_server`
+  (survives a WSL reset), keeps 14. Restore: stop stack, extract the tar over
+  `/docker/appdata`, start.
+- **Quality (Recyclarr)** — `recyclarr` container syncs TRaSH custom formats +
+  profiles daily. Radarr uses **"Remux + WEB 2160p"**, Sonarr **"WEB-2160p"** — 4K
+  prioritized, HDR10+/DV + Atmos/DTS-X/DTS-HD MA/TrueHD scored highest, SDR &
+  `DV-w/o-HDR` blocked. All existing items are on the 4K profile; upgrades happen
+  gradually (RSS / manual search — no automatic back-catalog flood). Config +
+  API keys live in `/docker/appdata/recyclarr/recyclarr.yml` (not in git).
+  ⚠️ 4K-strict: a title with no 4K release won't grab until one exists. To also
+  accept 1080p as a fallback, widen the profile's `qualities`.
+- **Subtitles (Bazarr)** — profile **EN + PT-BR**, external `.srt` only
+  (`use_embedded_subs=false`, so Plex never has to burn). Provider `podnapisi`
+  (currently offline). Add an **OpenSubtitles.com** free account (Settings →
+  Providers) for real coverage.
+- **Notifications (ntfy)** — self-hosted at `:8095`, topic **`arr-media`**.
+  Radarr/Sonarr/Prowlarr push grab/import/upgrade/health events. Subscribe: install
+  the ntfy app → add server `http://192.168.0.151:8095` (or via Tailscale) → topic
+  `arr-media`.
+- **Self-healing (autoheal)** — restarts any `autoheal=true` container that goes
+  unhealthy: gluetun (VPN recovery) and qbit/prowlarr (reconnect if gluetun bounced).
+- **Remote access (Tailscale)** — this WSL node is `gabinete-host`
+  (`gabinete-host.gab.internal`, `100.64.0.1`). All UIs are reachable over the tailnet
+  at `http://gabinete-host.gab.internal:<port>` (encrypted by WireGuard; no LAN
+  firewall rule needed). LAN access from other devices still needs the Hyper-V
+  firewall rule (see git history).
+
 ## Verify no leak
 
 ```bash

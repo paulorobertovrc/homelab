@@ -62,6 +62,8 @@ services:
       interval: ${HEALTH_VPN_DURATION_INITIAL:-30s}
       timeout: 20s
       retries: 5
+    labels:
+      - autoheal=true   # autoheal restarts gluetun if the VPN goes unhealthy
 
   ###############################################
   # QBITTORRENT — downloader (behind VPN)
@@ -83,6 +85,15 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ${CONFIG_ROOT:-/docker/appdata}/qbittorrent:/config
       - ${DOWNLOADS:-/data/torrents}:/data/torrents
+    # If gluetun restarts, this loses connectivity -> unhealthy -> autoheal restarts it.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -m 10 https://www.google.com -o /dev/null || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 4
+      start_period: 120s
+    labels:
+      - autoheal=true
 
   ###############################################
   # PROWLARR — indexer manager (behind VPN)
@@ -98,6 +109,14 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ${CONFIG_ROOT:-/docker/appdata}/prowlarr:/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -m 10 https://www.google.com -o /dev/null || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 4
+      start_period: 120s
+    labels:
+      - autoheal=true
 
   ###############################################
   # RADARR — movies
@@ -166,3 +185,62 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ${CONFIG_ROOT:-/docker/appdata}/bazarr:/config
       - ${LIBRARY:-/mnt/f/Media}:/data/media
+
+  ###############################################
+  # AUTOHEAL — restarts any container labeled autoheal=true when it goes unhealthy
+  ###############################################
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=120
+      - TZ=${TZ:-America/Cuiaba}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  ###############################################
+  # RECYCLARR — keeps TRaSH custom formats / quality profiles in sync (daily)
+  ###############################################
+  recyclarr:
+    image: ghcr.io/recyclarr/recyclarr:latest
+    container_name: recyclarr
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    networks:
+      - servarr_network
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+      - CRON_SCHEDULE=@daily
+      - RECYCLARR_CREATE_CONFIG=false
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/recyclarr:/config
+
+  ###############################################
+  # NTFY — self-hosted push notifications (Radarr/Sonarr/Prowlarr -> your phone)
+  ###############################################
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    container_name: ntfy
+    command: serve
+    restart: unless-stopped
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_NTFY:-172.39.0.10}
+    ports:
+      - 8095:80
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+      - NTFY_BASE_URL=http://192.168.0.151:8095
+      - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
+      - NTFY_AUTH_FILE=/var/cache/ntfy/auth.db
+      - NTFY_ATTACHMENT_CACHE_DIR=/var/cache/ntfy/attachments
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/ntfy:/var/cache/ntfy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:80/v1/health 2>/dev/null | grep -q healthy || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

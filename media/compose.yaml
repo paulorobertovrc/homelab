@@ -52,7 +52,8 @@ services:
       #- OPENVPN_USER=${OPENVPN_USER}
       #- OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
       - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:?Set WIREGUARD_PRIVATE_KEY in media/.env}
-      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:?Set WIREGUARD_ADDRESSES in media/.env (Mullvad "Address" line)}
+      # WIREGUARD_ADDRESSES: required for Mullvad; NordVPN sets it automatically — leave unset on NordVPN.
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:-}
       - SERVER_COUNTRIES=${SERVER_COUNTRIES:-Brazil}
       # Let LAN containers (radarr/sonarr/bazarr) reach prowlarr/qbit through the VPN firewall:
       - FIREWALL_OUTBOUND_SUBNETS=${SERVARR_SUBNET:-172.31.0.0/24}

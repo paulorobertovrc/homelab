@@ -1,8 +1,8 @@
 # Media stack (Servarr) — homelab WSL2
 
-Radarr / Sonarr / Bazarr / Prowlarr / qBittorrent behind a Mullvad WireGuard
-kill‑switch (gluetun). Runs on **WSL2 (Ubuntu 26.04)**; **Plex on the Windows host**
-serves the final library.
+Radarr / Sonarr / Bazarr / Prowlarr / qBittorrent behind a **NordVPN (NordLynx/WireGuard)**
+kill‑switch (gluetun), Brazil servers. Mullvad config is kept commented in `.env` as a
+fallback. Runs on **WSL2 (Ubuntu 26.04)**; **Plex on the Windows host** serves the library.
 
 ## VPN scope — only the stack, never the machine
 
@@ -55,9 +55,14 @@ qBittorrent `:8080` · Prowlarr `:9696` · Radarr `:7878` · Sonarr `:8989` · B
 
 ## Finish setup (2 steps)
 
-1. **Fill the Mullvad WireGuard values** in `media/.env` (Account → WireGuard →
-   Generate key): `WIREGUARD_PRIVATE_KEY` (already set) and `WIREGUARD_ADDRESSES`
-   (the `Address = …` line, still empty).
+1. **Paste your NordVPN NordLynx private key** into `media/.env` at the empty
+   `WIREGUARD_PRIVATE_KEY=` under the "NordVPN active" marker. Get it with either:
+   - **CLI (session key):** `nordvpn connect Brazil && sudo wg show nordlynx private-key && nordvpn disconnect`
+   - **API (stable account key, preferred):** generate an access token in your Nord
+     Account, then
+     `curl -s -u token:YOUR_TOKEN https://api.nordvpn.com/v1/users/services/credentials | jq -r .nordlynx_private_key`
+
+   (NordVPN needs no `WIREGUARD_ADDRESSES` — gluetun sets it automatically.)
 
 2. **Start it** (from `media/`):
    ```bash

@@ -1,5 +1,6 @@
-# Secrets — never commit
-media/.env
+# Secrets — never commit (.env, .env.bak, .env.local, ...)
+media/.env*
+!media/.env.example
 
 # gluetun bundles + auto-updates its own server lists; don't version them (6MB+ of churn)
 media/*.json

@@ -49,7 +49,9 @@ radarr `.4`, sonarr `.3`, bazarr `.6`. qbit/prowlarr share gluetun's IP (`.2`).
 through the VPN firewall.
 
 Access (WSL mirrored networking → reachable on `localhost`, `192.168.0.151`, or Tailscale):
-qBittorrent `:8080` · Prowlarr `:9696` · Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
+qBittorrent `:8090` · Prowlarr `:9696` · Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
+(Host port 8080 is taken on Windows, so the qBittorrent WebUI is published on 8090 →
+container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.0.2:8080`.)
 
 ---
 
@@ -73,7 +75,7 @@ qBittorrent `:8080` · Prowlarr `:9696` · Radarr `:7878` · Sonarr `:8989` · B
 
 ## First‑run app config
 
-- **qBittorrent** (`:8080`, temp password in `docker logs qbittorrent`):
+- **qBittorrent** (`:8090`, temp password in `docker logs qbittorrent`):
   Save path `/data/torrents/complete`, incomplete `/data/torrents/incomplete`.
 - **Prowlarr** (`:9696`): add indexers; Settings → Apps → add Radarr `http://172.39.0.4:7878`
   and Sonarr `http://172.39.0.3:8989`.

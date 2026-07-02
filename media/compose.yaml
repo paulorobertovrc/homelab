@@ -1,0 +1,152 @@
+# Servarr media stack — WSL2 (Ubuntu 26.04) homelab
+# ---------------------------------------------------------------------------
+# Storage layout (WSL-specific, see README.md):
+#   - Downloads  -> ext4 virtual disk  (${DOWNLOADS})  : fast, absorbs torrent churn
+#   - Library    -> F:\Media           (${LIBRARY})    : big; Plex on Windows reads it natively
+#   - Configs/DB -> ext4 /docker/appdata(${CONFIG_ROOT}): SQLite is slow/unsafe on 9p
+# Downloads live on ext4 while active; Radarr/Sonarr move+rename into F:\Media on import.
+# qbittorrent + prowlarr ride inside gluetun's netns (kill-switch); radarr/sonarr/bazarr
+# sit on servarr_network and reach them through gluetun's firewall (FIREWALL_OUTBOUND_SUBNETS).
+# ---------------------------------------------------------------------------
+
+x-common-keys: &common-keys
+  restart: unless-stopped
+  environment:
+    PUID: ${PUID:-1000}
+    PGID: ${PGID:-1000}
+    TZ: ${TZ:-America/Cuiaba}
+
+networks:
+  servarr_network:
+    name: servarr_network
+    ipam:
+      config:
+        - subnet: ${SERVARR_SUBNET:-172.31.0.0/24}
+
+services:
+  ###############################################
+  # GLUETUN — VPN gateway (kill-switch)
+  ###############################################
+  gluetun:
+    image: qmcgaw/gluetun:v3.41
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_GLUETUN:-172.31.0.2}
+    ports:
+      - 8080:8080       # qbittorrent WebUI
+      - 6881:6881       # qbittorrent torrent (tcp)
+      - 6881:6881/udp   # qbittorrent torrent (udp)
+      - 9696:9696       # prowlarr
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/gluetun:/gluetun
+    environment:
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-mullvad}
+      - VPN_TYPE=${VPN_TYPE:-wireguard}
+      # OpenVPN alternative (leave commented for WireGuard):
+      #- OPENVPN_USER=${OPENVPN_USER}
+      #- OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:?Set WIREGUARD_PRIVATE_KEY in media/.env}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:?Set WIREGUARD_ADDRESSES in media/.env (Mullvad "Address" line)}
+      - SERVER_COUNTRIES=${SERVER_COUNTRIES:-Brazil}
+      # Let LAN containers (radarr/sonarr/bazarr) reach prowlarr/qbit through the VPN firewall:
+      - FIREWALL_OUTBOUND_SUBNETS=${SERVARR_SUBNET:-172.31.0.0/24}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- https://ipinfo.io/ip || exit 1"]
+      interval: ${HEALTH_VPN_DURATION_INITIAL:-30s}
+      timeout: 20s
+      retries: 5
+
+  ###############################################
+  # QBITTORRENT — downloader (behind VPN)
+  ###############################################
+  qbittorrent:
+    <<: *common-keys
+    image: ghcr.io/hotio/qbittorrent:release
+    container_name: qbittorrent
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-America/Cuiaba}
+      WEBUI_PORTS: 8080/tcp
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/qbittorrent:/config
+      - ${DOWNLOADS:-/data/torrents}:/data/torrents
+
+  ###############################################
+  # PROWLARR — indexer manager (behind VPN)
+  ###############################################
+  prowlarr:
+    <<: *common-keys
+    image: ghcr.io/hotio/prowlarr:release
+    container_name: prowlarr
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/prowlarr:/config
+
+  ###############################################
+  # RADARR — movies
+  ###############################################
+  radarr:
+    <<: *common-keys
+    image: ghcr.io/hotio/radarr:release
+    container_name: radarr
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_RADARR:-172.31.0.11}
+    ports:
+      - 7878:7878
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/radarr:/config
+      - ${DOWNLOADS:-/data/torrents}:/data/torrents   # ext4 (read from downloads)
+      - ${LIBRARY:-/mnt/f/Media}:/data/media          # F: (write library -> /data/media/Movies)
+
+  ###############################################
+  # SONARR — TV shows
+  ###############################################
+  sonarr:
+    <<: *common-keys
+    image: ghcr.io/hotio/sonarr:release
+    container_name: sonarr
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_SONARR:-172.31.0.12}
+    ports:
+      - 8989:8989
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/sonarr:/config
+      - ${DOWNLOADS:-/data/torrents}:/data/torrents   # ext4 (read from downloads)
+      - ${LIBRARY:-/mnt/f/Media}:/data/media          # F: (write library -> "/data/media/TV Shows")
+
+  ###############################################
+  # BAZARR — subtitles (reads the library only)
+  ###############################################
+  bazarr:
+    <<: *common-keys
+    image: ghcr.io/hotio/bazarr:release
+    container_name: bazarr
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_BAZARR:-172.31.0.13}
+    ports:
+      - 6767:6767
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/bazarr:/config
+      - ${LIBRARY:-/mnt/f/Media}:/data/media

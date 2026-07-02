@@ -1,1 +1,8 @@
+# Secrets — never commit
 media/.env
+
+# gluetun bundles + auto-updates its own server lists; don't version them (6MB+ of churn)
+media/*.json
+
+# App configs/DBs live on the host (/docker/appdata), never in the repo
+appdata/

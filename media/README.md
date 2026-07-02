@@ -49,7 +49,7 @@ radarr `.4`, sonarr `.3`, bazarr `.6`. qbit/prowlarr share gluetun's IP (`.2`).
 `FIREWALL_OUTBOUND_SUBNETS` tracks the subnet so the *arr apps can reach qbit/prowlarr
 through the VPN firewall.
 
-Access (WSL mirrored networking → reachable on `localhost`, `192.168.0.151`, or Tailscale):
+Access (WSL mirrored networking → reachable on `localhost`, `<your-lan-ip>`, or Tailscale):
 qBittorrent `:8090` · Prowlarr `:9696` · Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
 (Host port 8080 is taken on Windows, so the qBittorrent WebUI is published on 8090 →
 container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.0.2:8080`.)
@@ -127,18 +127,19 @@ matches, confirm.
   ⚠️ 4K-strict: a title with no 4K release won't grab until one exists. To also
   accept 1080p as a fallback, widen the profile's `qualities`.
 - **Subtitles (Bazarr)** — profile **EN + PT-BR**, external `.srt` only
-  (`use_embedded_subs=false`, so Plex never has to burn). Provider `podnapisi`
-  (currently offline). Add an **OpenSubtitles.com** free account (Settings →
-  Providers) for real coverage.
+  (`use_embedded_subs=false`, so Plex never has to burn). Providers:
+  **OpenSubtitles.com** (primary, verified downloading en + pt-BR) + `podnapisi`
+  (fallback, auto-recovers when its site is back up). Credentials in Bazarr's
+  config (not in git).
 - **Notifications (ntfy)** — self-hosted at `:8095`, topic **`arr-media`**.
   Radarr/Sonarr/Prowlarr push grab/import/upgrade/health events. Subscribe: install
-  the ntfy app → add server `http://192.168.0.151:8095` (or via Tailscale) → topic
+  the ntfy app → add server `http://<your-lan-ip>:8095` (or via Tailscale) → topic
   `arr-media`.
 - **Self-healing (autoheal)** — restarts any `autoheal=true` container that goes
   unhealthy: gluetun (VPN recovery) and qbit/prowlarr (reconnect if gluetun bounced).
-- **Remote access (Tailscale)** — this WSL node is `gabinete-host`
-  (`gabinete-host.gab.internal`, `100.64.0.1`). All UIs are reachable over the tailnet
-  at `http://gabinete-host.gab.internal:<port>` (encrypted by WireGuard; no LAN
+- **Remote access (Tailscale)** — this WSL node is your WSL Tailscale node
+  (`<your-tailscale-host>`, `<tailnet-ip>`). All UIs are reachable over the tailnet
+  at `http://<your-tailscale-host>:<port>` (encrypted by WireGuard; no LAN
   firewall rule needed). LAN access from other devices still needs the Hyper-V
   firewall rule (see git history).
 

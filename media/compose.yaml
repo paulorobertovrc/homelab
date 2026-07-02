@@ -233,7 +233,7 @@ services:
       - 8095:80
     environment:
       - TZ=${TZ:-America/Cuiaba}
-      - NTFY_BASE_URL=http://192.168.0.151:8095
+      - NTFY_BASE_URL=http://${LAN_IP:-localhost}:8095
       - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
       - NTFY_AUTH_FILE=/var/cache/ntfy/auth.db
       - NTFY_ATTACHMENT_CACHE_DIR=/var/cache/ntfy/attachments

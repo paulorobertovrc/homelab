@@ -77,6 +77,10 @@ container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.
 
 - **qBittorrent** (`:8090`, temp password in `docker logs qbittorrent`):
   Save path `/data/torrents/complete`, incomplete `/data/torrents/incomplete`.
+  Set a permanent password (Options → WebUI) — the temp one regenerates every restart.
+  Note: because the WebUI is remapped (host 8090 → container 8080), qBittorrent's
+  **Host header validation is disabled** (`WebUI\HostHeaderValidation=false` in its
+  config) — otherwise it returns `401 Unauthorized` on the port mismatch.
 - **Prowlarr** (`:9696`): add indexers; Settings → Apps → add Radarr `http://172.39.0.4:7878`
   and Sonarr `http://172.39.0.3:8989`.
 - **Radarr** (`:7878`): root folder `/data/media/Movies`; download client qBittorrent

@@ -50,7 +50,8 @@ radarr `.4`, sonarr `.3`, bazarr `.6`. qbit/prowlarr share gluetun's IP (`.2`).
 through the VPN firewall.
 
 Access (WSL mirrored networking → reachable on `localhost`, `<your-lan-ip>`, or Tailscale):
-qBittorrent `:8090` · Prowlarr `:9696` · Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
+**Homepage (dashboard) `:7575` ← start here** · qBittorrent `:8090` · Prowlarr `:9696` ·
+Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
 (Host port 8080 is taken on Windows, so the qBittorrent WebUI is published on 8090 →
 container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.0.2:8080`.)
 
@@ -114,6 +115,17 @@ matches, confirm.
 
 ## Extras / operations
 
+- **Dashboard (Homepage)** — one pane of glass at `:7575` (host port 7575 → container 3000;
+  3000 was taken by another project). Live widgets pull each app's API: Radarr/Sonarr
+  (library counts + download queue), qBittorrent (speeds, active torrents), Prowlarr
+  (indexers/grabs), Bazarr (subtitle stats), plus per-tile container health/CPU/RAM via the
+  Docker socket (mounted **read-only**). Config is versionable YAML in
+  `/docker/appdata/homepage/*.yaml` (`services.yaml` holds API keys → **not in git**).
+  Homepage guards against CSRF with an allow-list of `Host` headers — set every host:port you
+  open it by in `HOMEPAGE_ALLOWED_HOSTS` (keep `localhost:3000` there for the container's own
+  healthcheck). The **qBittorrent** widget authenticates via qBittorrent's *subnet whitelist*
+  (`WebUI\AuthSubnetWhitelist=172.39.0.0/24`) instead of a stored password — only stack
+  containers sit on that subnet, so no plaintext qbit password lives in the dashboard config.
 - **Backups** — `scripts/arr-backup.sh` via systemd timer `arr-backup.timer` (daily
   04:30, `Persistent=true`). Tars `/docker/appdata` → `D:\backups\arr_server`
   (survives a WSL reset), keeps 14. Restore: stop stack, extract the tar over

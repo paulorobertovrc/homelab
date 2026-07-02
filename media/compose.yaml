@@ -244,3 +244,31 @@ services:
       interval: 60s
       timeout: 10s
       retries: 3
+
+  ###############################################
+  # HOMEPAGE — single dashboard for the whole stack
+  # Widgets pull each app's API (live counts/queues/speeds); container status via docker socket (ro).
+  # Config lives in ${CONFIG_ROOT}/homepage (not in git — holds API keys).
+  ###############################################
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    restart: unless-stopped
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_HOMEPAGE:-172.39.0.20}
+    ports:
+      - 7575:3000   # host 7575 (3000 is taken by another project); container listens on 3000
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+      # Homepage refuses requests whose Host header isn't listed (CSRF guard). Set in media/.env.
+      - HOMEPAGE_ALLOWED_HOSTS=${HOMEPAGE_ALLOWED_HOSTS:-localhost:7575,localhost:3000}
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/homepage:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # read-only: container status only
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/ || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

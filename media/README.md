@@ -81,11 +81,11 @@ requests — not just "should work."
   (143 real results for a test query):
   | Indexer | Status |
   |---|---|
-  | YTS | ✅ working |
-  | The Pirate Bay | ✅ working |
-  | LimeTorrents | ✅ working |
-  | 1337x | ⚠️ added but **fails** — see below |
-  | EZTV | ⚠️ added but **fails** — see below |
+  | YTS | ✅ added, working |
+  | The Pirate Bay | ✅ added, working |
+  | LimeTorrents | ✅ added, working |
+  | 1337x | ❌ **not added** — Prowlarr rejects it (HTTP 400), see below |
+  | EZTV | ❌ **not added** — Prowlarr rejects it (HTTP 400), see below |
 
 ### FlareSolverr (Cloudflare bypass) — partial
 
@@ -97,10 +97,11 @@ wait for and receive that full response — but still classifies it as blocked. 
 means the returned page still carries Cloudflare markers Prowlarr's Cardigann parser
 rejects, i.e. these two sites currently have a protection layer FlareSolverr 3.5.0
 alone doesn't fully clear. This is a **known external limitation** (site hardening,
-not a stack misconfiguration) — not something to keep patching blindly. Options if you
-want them working later: retry occasionally (sites' protection level changes), or add
-a residential-proxy‑backed alternative. Left both indexers enabled in Prowlarr in case
-a future FlareSolverr/site change fixes it on its own.
+not a stack misconfiguration) — not something to keep patching blindly. Prowlarr
+rejects the add at save time (HTTP 400), so **1337x/EZTV are not present** in the
+indexer list at all right now — only YTS/The Pirate Bay/LimeTorrents are. FlareSolverr
+itself is left running (Settings → Indexer Proxies) in case a future site/FlareSolverr
+update fixes it — retry adding 1337x/EZTV from Prowlarr's UI (Indexers → Add) then.
 
 ### Not yet done (needs your review, not automatable)
 

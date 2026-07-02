@@ -52,6 +52,8 @@ through the VPN firewall.
 Access (WSL mirrored networking → reachable on `localhost`, `<your-lan-ip>`, or Tailscale):
 **Homepage (dashboard) `:7575` ← start here** · qBittorrent `:8090` · Prowlarr `:9696` ·
 Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
+(Host port 8080 is taken on Windows, so the qBittorrent WebUI is published on 8090 →
+container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.0.2:8080`.)
 
 ## Start / stop the whole stack
 
@@ -68,10 +70,7 @@ Don't want it running and eating resources? One command turns everything off/on
 
 "Off" is safe: all data lives in bind mounts (`/docker/appdata`, `/data/torrents`,
 `F:\Media`), never inside the containers — `down` only removes the (stateless) containers.
-For one-word convenience: `alias mstack='~/dev/homelab/media/stack.sh'`. (Portainer, already
-running, is a GUI alternative: select the containers → Stop/Start.)
-(Host port 8080 is taken on Windows, so the qBittorrent WebUI is published on 8090 →
-container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.0.2:8080`.)
+For one-word convenience: `alias mstack='~/dev/homelab/media/stack.sh'`.
 
 ---
 

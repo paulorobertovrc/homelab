@@ -52,6 +52,24 @@ through the VPN firewall.
 Access (WSL mirrored networking → reachable on `localhost`, `<your-lan-ip>`, or Tailscale):
 **Homepage (dashboard) `:7575` ← start here** · qBittorrent `:8090` · Prowlarr `:9696` ·
 Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
+
+## Start / stop the whole stack
+
+Don't want it running and eating resources? One command turns everything off/on
+(`stack.sh` just wraps `docker compose` from this folder):
+
+```bash
+./stack.sh up        # bring everything up (gluetun/VPN first, then the apps)
+./stack.sh down      # stop + remove all containers -> zero CPU/RAM
+./stack.sh restart   # down then up (the safe way to bounce gluetun)
+./stack.sh status    # what's running
+./stack.sh logs [service]   # follow logs (all, or one)
+```
+
+"Off" is safe: all data lives in bind mounts (`/docker/appdata`, `/data/torrents`,
+`F:\Media`), never inside the containers — `down` only removes the (stateless) containers.
+For one-word convenience: `alias mstack='~/dev/homelab/media/stack.sh'`. (Portainer, already
+running, is a GUI alternative: select the containers → Stop/Start.)
 (Host port 8080 is taken on Windows, so the qBittorrent WebUI is published on 8090 →
 container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.0.2:8080`.)
 
@@ -118,8 +136,11 @@ matches, confirm.
 - **Dashboard (Homepage)** — one pane of glass at `:7575` (host port 7575 → container 3000;
   3000 was taken by another project). Live widgets pull each app's API: Radarr/Sonarr
   (library counts + download queue), qBittorrent (speeds, active torrents), Prowlarr
-  (indexers/grabs), Bazarr (subtitle stats), plus per-tile container health/CPU/RAM via the
-  Docker socket (mounted **read-only**). Config is versionable YAML in
+  (indexers/grabs), Bazarr (subtitle stats), **Gluetun (live VPN public IP/region)**, plus
+  per-tile container health/CPU/RAM via the Docker socket (mounted **read-only**). The Gluetun
+  tile reads gluetun's control server (`:8000`, internal-only — not published to the host); it's
+  currently unauthenticated (fine while the image is pinned). To harden, set up control-server
+  auth — note that restarting gluetun re-creates qbit/prowlarr, so do it with `./stack.sh restart`. Config is versionable YAML in
   `/docker/appdata/homepage/*.yaml` (`services.yaml` holds API keys → **not in git**).
   Homepage guards against CSRF with an allow-list of `Host` headers — set every host:port you
   open it by in `HOMEPAGE_ALLOWED_HOSTS` (keep `localhost:3000` there for the container's own

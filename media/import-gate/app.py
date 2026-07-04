@@ -1,7 +1,10 @@
 """Flask webhook receiver + self-heal orchestration."""
+import logging
 import os
 import shutil
 from flask import Flask, request, jsonify
+
+logger = logging.getLogger(__name__)
 
 
 def _title_key(kind, media_id):
@@ -59,8 +62,9 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
                               expected_runtime_min=runtime)
 
         if verdict.errored:
-            notify_fn(settings.ntfy_url, "Import-gate indisponível", "warning", 3,
-                      f"{title}: importado sem validação ({verdict.detail})")
+            msg = f"{title}: importado sem validação ({verdict.detail})"
+            notify_fn(settings.ntfy_url, "Import-gate indisponível", "warning", 3, msg)
+            logger.warning(msg)
             return jsonify(status="errored-passed")
 
         if verdict.ok:
@@ -70,32 +74,38 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
         key = _title_key(kind, media_id)
         attempts = store.get(key)
         if attempts >= settings.max_attempts:
-            notify_fn(settings.ntfy_url, "⚠️ Import-gate desistiu", "no_entry", 4,
-                      f"{title}: {settings.max_attempts} tentativas sem faixa original. "
-                      f"Intervenção manual necessária.")
+            msg = (f"{title}: {settings.max_attempts} tentativas sem faixa original. "
+                   f"Intervenção manual necessária.")
+            notify_fn(settings.ntfy_url, "⚠️ Import-gate desistiu", "no_entry", 4, msg)
+            logger.error(msg)
             return jsonify(status="gave-up")
 
-        _quarantine(path, settings, title, verdict.reason)
         try:
+            _quarantine(path, settings, title, verdict.reason, attempts)
             delete_file(file_id)
             if download_id:
                 hid = arr.find_grab_history_id(download_id)
                 if hid is not None:
                     arr.mark_failed(hid)
         except Exception as e:
-            notify_fn(settings.ntfy_url, "Import-gate erro no self-heal", "warning", 4,
-                      f"{title}: quarentenado, mas self-heal falhou: {e}")
+            if download_id:
+                seen_download_ids.discard(download_id)
+            msg = f"{title}: quarentenado, mas self-heal falhou: {e}"
+            notify_fn(settings.ntfy_url, "Import-gate erro no self-heal", "warning", 4, msg)
+            logger.error(msg)
             return jsonify(status="quarantined-selfheal-failed")
 
         n = store.increment(key)
-        notify_fn(settings.ntfy_url, "🔒 Quarentena", "lock", 3,
-                  f"{title}: {verdict.detail}. Tentativa {n}. Re-busca disparada.")
+        msg = f"{title}: {verdict.detail}. Tentativa {n}. Re-busca disparada."
+        notify_fn(settings.ntfy_url, "🔒 Quarentena", "lock", 3, msg)
+        logger.warning(msg)
         return jsonify(status="quarantined", attempt=n)
 
-    def _quarantine(path, settings, title, reason):
+    def _quarantine(path, settings, title, reason, attempt_number):
         dest_dir = os.path.join(settings.quarantine_root, f"{title} ({reason})")
         os.makedirs(dest_dir, exist_ok=True)
-        shutil.copy2(path, os.path.join(dest_dir, os.path.basename(path)))
+        dest_name = f"attempt-{attempt_number + 1}-{os.path.basename(path)}"
+        shutil.copy2(path, os.path.join(dest_dir, dest_name))
 
     return app
 

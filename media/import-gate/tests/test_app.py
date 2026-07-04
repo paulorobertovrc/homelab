@@ -12,6 +12,7 @@ class Recorder:
         self.notifications = []
         self.marked_failed = []
         self.deleted = []
+        self.deleted_episode = []
 
 
 @pytest.fixture
@@ -29,6 +30,7 @@ def ctx(tmp_path):
 
     class FakeArr:
         def delete_moviefile(self, fid): rec.deleted.append(fid)
+        def delete_episodefile(self, fid): rec.deleted_episode.append(fid)
         def find_grab_history_id(self, did): return 6
         def mark_failed(self, hid): rec.marked_failed.append(hid)
 
@@ -53,6 +55,16 @@ def _radarr_import(path):
     }
 
 
+def _sonarr_import(path):
+    return {
+        "eventType": "Download",
+        "series": {"id": 42, "title": "The Wire", "originalLanguage": {"name": "English"}},
+        "episodeFile": {"id": 91, "path": path},
+        "isUpgrade": False,
+        "downloadId": "XYZ",
+    }
+
+
 def test_test_event_returns_200_and_does_nothing(ctx):
     r = ctx.app.post("/webhook", json={"eventType": "Test"})
     assert r.status_code == 200
@@ -62,11 +74,11 @@ def test_test_event_returns_200_and_does_nothing(ctx):
 def test_reject_quarantines_and_selfheals(ctx):
     r = ctx.app.post("/webhook", json=_radarr_import(ctx.file))
     assert r.status_code == 200
-    # file copied into quarantine
+    # file copied into quarantine (filename carries the attempt number, see Finding C)
     found = []
     for root, _, files in os.walk(ctx.quar):
         found += files
-    assert "Heat.mkv" in found
+    assert any(name.endswith("Heat.mkv") for name in found)
     assert ctx.rec.deleted == [79]
     assert ctx.rec.marked_failed == [6]
     assert len(ctx.rec.notifications) == 1
@@ -96,3 +108,64 @@ def test_loop_guard_stops_after_max(ctx):
     assert len(ctx.rec.marked_failed) == marks_before
     assert any("manual" in m.lower() or "gave up" in m.lower()
                for _, m in ctx.rec.notifications)
+
+
+def test_reject_quarantines_and_selfheals_sonarr(ctx):
+    r = ctx.app.post("/webhook", json=_sonarr_import(ctx.file))
+    assert r.status_code == 200
+    found = []
+    for root, _, files in os.walk(ctx.quar):
+        found += files
+    assert any(name.endswith("Heat.mkv") for name in found)
+    assert ctx.rec.deleted_episode == [91]
+    assert ctx.rec.deleted == []  # movie-file deletion never invoked for a Sonarr event
+    assert ctx.rec.marked_failed == [6]
+    assert len(ctx.rec.notifications) == 1
+
+
+def test_errored_verdict_never_quarantines(tmp_path):
+    rec = Recorder()
+    lib = tmp_path / "media"; lib.mkdir()
+    quar = tmp_path / "quar"; quar.mkdir()
+    src = lib / "Heat (1995)"; src.mkdir()
+    f = src / "Heat.mkv"; f.write_bytes(b"x" * 100)
+
+    settings = SimpleNamespace(
+        library_root=str(lib), quarantine_root=str(quar),
+        ntfy_url="http://ntfy/arr-media", max_attempts=3,
+    )
+
+    class FakeArr:
+        def delete_moviefile(self, fid): rec.deleted.append(fid)
+        def delete_episodefile(self, fid): rec.deleted_episode.append(fid)
+        def find_grab_history_id(self, did): return 6
+        def mark_failed(self, hid): rec.marked_failed.append(hid)
+
+    from state import AttemptStore
+    store = AttemptStore(str(tmp_path / "s.db"))
+
+    def notify_fn(url, title, tags, prio, msg): rec.notifications.append((title, msg))
+
+    app = create_app(
+        settings, FakeArr(), FakeArr(), store,
+        validate_fn=lambda **kw: Verdict(True, "ok", "gate error: whisper crashed", errored=True),
+        notify_fn=notify_fn,
+    )
+    client = app.test_client()
+
+    r = client.post("/webhook", json=_radarr_import(str(f)))
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "errored-passed"
+
+    # gate error must never quarantine or self-heal
+    assert rec.deleted == []
+    assert rec.marked_failed == []
+    found = []
+    for root, _, files in os.walk(str(quar)):
+        found += files
+    assert found == []
+
+    # but it must still notify (the "gate unavailable" message, not the quarantine one)
+    assert len(rec.notifications) == 1
+    title, _ = rec.notifications[0]
+    assert "indispon" in title.lower()

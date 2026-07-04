@@ -1,10 +1,11 @@
 import json
 import shutil
 import os
+import subprocess
 import pytest
 from types import SimpleNamespace
 from app import create_app
-from validator import Verdict
+from validator import Verdict, validate
 
 
 class Recorder:
@@ -94,13 +95,18 @@ def test_idempotent_same_download_id(ctx):
 def test_loop_guard_stops_after_max(ctx):
     # push attempts to the cap, then one more must NOT mark failed again
     from state import AttemptStore
-    for did in ["A", "B", "C"]:
+    for i, did in enumerate(["A", "B", "C"]):
         p = dict(_radarr_import(ctx.file)); p["downloadId"] = did
+        # each re-grab imports a NEW file record (new movieFile.id), same as
+        # real Radarr; reusing the same id would collide with the Finding-A
+        # per-file idempotency key and mask this test's intent.
+        p["movieFile"] = {"id": 100 + i, "path": ctx.file}
         # regenerate the source file each time (previous run moved it)
         os.makedirs(os.path.dirname(ctx.file), exist_ok=True)
         open(ctx.file, "wb").write(b"x" * 100)
         ctx.app.post("/webhook", json=p)
     p = dict(_radarr_import(ctx.file)); p["downloadId"] = "D"
+    p["movieFile"] = {"id": 200, "path": ctx.file}
     open(ctx.file, "wb").write(b"x" * 100)
     marks_before = len(ctx.rec.marked_failed)
     ctx.app.post("/webhook", json=p)
@@ -108,6 +114,61 @@ def test_loop_guard_stops_after_max(ctx):
     assert len(ctx.rec.marked_failed) == marks_before
     assert any("manual" in m.lower() or "gave up" in m.lower()
                for _, m in ctx.rec.notifications)
+
+
+def test_season_pack_different_episode_files_both_validated(ctx):
+    # Finding A: a season-pack torrent has ONE downloadId but Sonarr fires
+    # ONE Download event PER imported episode file. Idempotency must be
+    # keyed by the per-file id (episodeFile.id), not by downloadId, or every
+    # episode after the first in the pack would be silently treated as a
+    # duplicate and skip validation entirely.
+    p1 = _sonarr_import(ctx.file)
+    p1["downloadId"] = "SEASONPACK"
+    p1["episodeFile"] = {"id": 201, "path": ctx.file}
+    p1["episodes"] = [{"id": 501}]
+
+    p2 = _sonarr_import(ctx.file)
+    p2["downloadId"] = "SEASONPACK"  # same torrent/downloadId as p1
+    p2["episodeFile"] = {"id": 202, "path": ctx.file}  # different file
+    p2["episodes"] = [{"id": 502}]
+
+    ctx.app.post("/webhook", json=p1)
+    ctx.app.post("/webhook", json=p2)
+
+    # Both episode files must have been independently validated and acted on.
+    assert ctx.rec.deleted_episode == [201, 202]
+    assert ctx.rec.marked_failed == [6, 6]
+
+
+def test_per_episode_loop_guard_independent_budgets(ctx):
+    # Finding B: the attempt-counter budget must be per-episode, not shared
+    # across the whole series. Exhausting episode 501's budget must NOT
+    # affect a different episode (502) of the SAME series.
+    def _episode_payload(download_id, episode_file_id, episode_id):
+        p = _sonarr_import(ctx.file)
+        p["downloadId"] = download_id
+        p["episodeFile"] = {"id": episode_file_id, "path": ctx.file}
+        p["episodes"] = [{"id": episode_id}]
+        return p
+
+    # Exhaust episode 501's budget (max_attempts=3).
+    for i, did in enumerate(["A", "B", "C"]):
+        open(ctx.file, "wb").write(b"x" * 100)  # regenerate (previous run moved it)
+        ctx.app.post("/webhook", json=_episode_payload(did, 300 + i, 501))
+
+    open(ctx.file, "wb").write(b"x" * 100)
+    marks_before = len(ctx.rec.marked_failed)
+    ctx.app.post("/webhook", json=_episode_payload("D", 310, 501))
+    assert len(ctx.rec.marked_failed) == marks_before  # episode 501: gave up
+    assert any("manual" in m.lower() or "gave up" in m.lower()
+               for _, m in ctx.rec.notifications)
+
+    # A DIFFERENT episode of the same series must still be handled normally.
+    open(ctx.file, "wb").write(b"x" * 100)
+    marks_before = len(ctx.rec.marked_failed)
+    ctx.app.post("/webhook", json=_episode_payload("E", 320, 502))
+    assert len(ctx.rec.marked_failed) == marks_before + 1
+    assert ctx.rec.deleted_episode[-1] == 320
 
 
 def test_reject_quarantines_and_selfheals_sonarr(ctx):
@@ -169,3 +230,72 @@ def test_errored_verdict_never_quarantines(tmp_path):
     assert len(rec.notifications) == 1
     title, _ = rec.notifications[0]
     assert "indispon" in title.lower()
+
+
+def test_real_validator_wired_end_to_end_rejects_wrong_language(tmp_path):
+    """Finding D: every other test injects a FAKE validate_fn, so the real
+    keyword-argument seam between app.py and validator.validate() has never
+    been exercised. Wire the REAL validator.validate through app.py's webhook
+    handler, exactly like the production `if __name__ == "__main__"` block
+    does, stubbing only the whisper transcribe call. A confident non-English
+    detection must make the REAL validator compute a genuine wrong-language
+    reject, proving app.py -> validator.validate() -> media_probe are wired
+    correctly end-to-end with real ffmpeg/ffprobe."""
+    rec = Recorder()
+    lib = tmp_path / "media"; lib.mkdir()
+    quar = tmp_path / "quar"; quar.mkdir()
+    src = lib / "Heat (1995)"; src.mkdir()
+    clip = str(src / "Heat.mkv")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=35:size=128x72:rate=5",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=35",
+         "-metadata:s:a:0", "language=eng", "-shortest", clip],
+        check=True, capture_output=True,
+    )
+
+    settings = SimpleNamespace(
+        library_root=str(lib), quarantine_root=str(quar),
+        ntfy_url="http://ntfy/arr-media", max_attempts=3,
+        # validator.validate()'s own knobs (see tests/test_validator.py's _settings):
+        lang_prob_threshold=0.7, sample_windows=2, sample_seconds=3,
+        skip_intro_fraction=0.1,
+    )
+
+    class FakeArr:
+        def delete_moviefile(self, fid): rec.deleted.append(fid)
+        def delete_episodefile(self, fid): rec.deleted_episode.append(fid)
+        def find_grab_history_id(self, did): return 6
+        def mark_failed(self, hid): rec.marked_failed.append(hid)
+
+    from state import AttemptStore
+    store = AttemptStore(str(tmp_path / "s.db"))
+
+    def notify_fn(url, title, tags, prio, msg): rec.notifications.append((title, msg))
+
+    def fake_transcribe_fn(clip_path):
+        return ("ru", 0.95)  # confidently NOT English -> real validator rejects
+
+    def validate_fn(path, original_language_name, expected_runtime_min):
+        return validate(path, original_language_name, expected_runtime_min,
+                        settings, fake_transcribe_fn)
+
+    app = create_app(settings, FakeArr(), FakeArr(), store,
+                     validate_fn=validate_fn, notify_fn=notify_fn)
+    client = app.test_client()
+
+    payload = _radarr_import(clip)
+    # keep expected runtime short so the 35s fixture clip clears the
+    # duration-floor check (same pattern as tests/test_validator.py's eng_clip
+    # tests, which pass expected_runtime_min=1).
+    payload["movie"]["runtime"] = 1
+
+    r = client.post("/webhook", json=payload)
+    assert r.status_code == 200
+    assert r.get_json()["status"] == "quarantined"
+
+    found = []
+    for root, _, files in os.walk(str(quar)):
+        found += files
+    assert any(name.endswith("Heat.mkv") for name in found)
+    assert rec.deleted == [79]
+    assert rec.marked_failed == [6]

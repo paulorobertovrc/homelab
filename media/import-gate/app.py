@@ -13,7 +13,7 @@ def _title_key(kind, media_id):
 
 def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
     app = Flask(__name__)
-    seen_download_ids = set()  # idempotency within process lifetime
+    seen_file_ids = set()  # idempotency within process lifetime
 
     @app.get("/health")
     def health():
@@ -44,7 +44,8 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
         else:
             media = payload["series"]
             media_file = payload["episodeFile"]
-            media_id = media["id"]
+            episode_ids = "-".join(str(e["id"]) for e in payload.get("episodes", []))
+            media_id = f"{media['id']}-{episode_ids}" if episode_ids else str(media["id"])
             title = media.get("title", "?")
             orig_lang = media.get("originalLanguage", {}).get("name", "")
             runtime = None
@@ -52,10 +53,9 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
             delete_file = arr.delete_episodefile
 
         download_id = payload.get("downloadId")
-        if download_id and download_id in seen_download_ids:
+        if file_id in seen_file_ids:
             return jsonify(status="duplicate")
-        if download_id:
-            seen_download_ids.add(download_id)
+        seen_file_ids.add(file_id)
 
         path = media_file["path"]
         verdict = validate_fn(path=path, original_language_name=orig_lang,
@@ -82,20 +82,19 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
 
         try:
             _quarantine(path, settings, title, verdict.reason, attempts)
+            n = store.increment(key)
             delete_file(file_id)
             if download_id:
                 hid = arr.find_grab_history_id(download_id)
                 if hid is not None:
                     arr.mark_failed(hid)
         except Exception as e:
-            if download_id:
-                seen_download_ids.discard(download_id)
+            seen_file_ids.discard(file_id)
             msg = f"{title}: quarentenado, mas self-heal falhou: {e}"
             notify_fn(settings.ntfy_url, "Import-gate erro no self-heal", "warning", 4, msg)
             logger.error(msg)
             return jsonify(status="quarantined-selfheal-failed")
 
-        n = store.increment(key)
         msg = f"{title}: {verdict.detail}. Tentativa {n}. Re-busca disparada."
         notify_fn(settings.ntfy_url, "🔒 Quarentena", "lock", 3, msg)
         logger.warning(msg)

@@ -121,6 +121,29 @@ indexer list at all right now — only YTS/The Pirate Bay/LimeTorrents are. Flar
 itself is left running (Settings → Indexer Proxies) in case a future site/FlareSolverr
 update fixes it — retry adding 1337x/EZTV from Prowlarr's UI (Indexers → Add) then.
 
+### Import-gate — post-import audio-language + integrity gate
+
+`import-gate` (`172.39.0.17:8080`, internal only — no host port) validates every
+Sonarr/Radarr import: ffprobe integrity check, then faster-whisper (CPU) confirms
+the file actually contains an audio track in the title's original language (not
+just a release *tagged* as that language). On a confident reject: quarantines the
+file to `/mnt/d/quarantine/arr_server` (outside the library), deletes the *arr file
+record, blocklists + re-searches via the *arr API, notifies via ntfy — capped at
+3 attempts per title before giving up and asking for manual intervention. See
+`docs/superpowers/specs/2026-07-04-import-gate-design.md` for the full design.
+
+**Layer-0 grab-time filter (cheap, reduces how often whisper needs to run) —
+checked, already in place, nothing new configured:**
+
+- **Radarr**: every quality profile (including the one actually in use,
+  `Remux + WEB 2160p`, id 7) already has `language: Original` — Radarr only grabs
+  releases tagged with the movie's own original language.
+- **Sonarr**: language profile `English` (id 1, marked "Deprecated" by Sonarr's UI
+  but still the one assigned) — matches this library's all-English TV catalog.
+
+Webhook connections (`onDownload` + `onUpgrade` → `http://172.39.0.17:8080/webhook`)
+are wired in both apps' Settings → Connect.
+
 ### Not yet done (needs your review, not automatable)
 
 **Library import**: Radarr/Sonarr already see the existing files in `F:\Media\Movies`

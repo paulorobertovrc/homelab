@@ -310,6 +310,7 @@ services:
     build: ./import-gate
     container_name: import-gate
     restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
     networks:
       servarr_network:
         ipv4_address: ${SET_IP_IMPORT_GATE:-172.31.0.17}
@@ -319,7 +320,8 @@ services:
       - SONARR_URL=http://${SET_IP_SONARR:-172.31.0.12}:8989
       - RADARR_API_KEY=${RADARR_API_KEY:?Set RADARR_API_KEY in media/.env}
       - SONARR_API_KEY=${SONARR_API_KEY:?Set SONARR_API_KEY in media/.env}
-      - NTFY_URL=http://${SET_IP_NTFY:-172.31.0.10}:80/arr-media
+      - NTFY_URL=http://${SET_IP_NTFY:-172.39.0.10}:80/arr-media
+      - HF_HOME=/config/hf-cache
     volumes:
       - ${LIBRARY:-/mnt/f/Media}:/data/media:ro
       - /mnt/d/quarantine/arr_server:/data/quarantine

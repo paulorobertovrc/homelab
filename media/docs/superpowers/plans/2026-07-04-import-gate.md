@@ -64,7 +64,7 @@ media/import-gate/
 - Produces: `config.Settings` dataclass with fields `radarr_url: str`, `radarr_key: str`, `sonarr_url: str`, `sonarr_key: str`, `library_root: str`, `quarantine_root: str`, `state_dir: str`, `ntfy_url: str`, `whisper_model: str`, `lang_prob_threshold: float`, `max_attempts: int`, `sample_windows: int`, `sample_seconds: int`, `skip_intro_fraction: float`; classmethod `Settings.from_env() -> Settings`.
 - Produces: `languages.to_code(name: str) -> str | None` (e.g. `"English" -> "en"`, `"Russian" -> "ru"`), `languages.same_language(name: str, code: str) -> bool`.
 
-- [ ] **Step 1: Write `requirements.txt`**
+- [x] **Step 1: Write `requirements.txt`**
 
 ```text
 flask==3.0.3
@@ -72,7 +72,7 @@ faster-whisper==1.0.3
 requests==2.32.3
 ```
 
-- [ ] **Step 2: Write the failing test for the language map**
+- [x] **Step 2: Write the failing test for the language map**
 
 Create `media/import-gate/tests/test_languages.py`:
 
@@ -108,12 +108,12 @@ def test_same_language_unknown_name_is_false():
     assert same_language("Klingon", "en") is False
 ```
 
-- [ ] **Step 3: Run it, verify it fails**
+- [x] **Step 3: Run it, verify it fails**
 
 Run: `cd media/import-gate && python -m pytest tests/test_languages.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'languages'`
 
-- [ ] **Step 4: Implement `languages.py`**
+- [x] **Step 4: Implement `languages.py`**
 
 ```python
 """Map Servarr language names to ISO-639-1 codes (what faster-whisper returns)."""
@@ -153,12 +153,12 @@ def same_language(name: str, code: str) -> bool:
     return mapped is not None and mapped == code
 ```
 
-- [ ] **Step 5: Run it, verify it passes**
+- [x] **Step 5: Run it, verify it passes**
 
 Run: `cd media/import-gate && python -m pytest tests/test_languages.py -v`
 Expected: PASS (7 passed)
 
-- [ ] **Step 6: Implement `config.py`**
+- [x] **Step 6: Implement `config.py`**
 
 ```python
 """Environment-driven settings. All knobs live here, nothing hardcoded elsewhere."""
@@ -203,7 +203,7 @@ class Settings:
         )
 ```
 
-- [ ] **Step 7: Write `tests/conftest.py` (make modules importable + shared tmp settings)**
+- [x] **Step 7: Write `tests/conftest.py` (make modules importable + shared tmp settings)**
 
 ```python
 import os
@@ -212,7 +212,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add media/import-gate/requirements.txt media/import-gate/config.py \
@@ -232,7 +232,7 @@ git commit -m "feat(import-gate): scaffold config + language map"
 - Consumes: nothing.
 - Produces: `state.AttemptStore(db_path: str)` with methods `increment(title_key: str) -> int` (returns the new count), `get(title_key: str) -> int`, `reset(title_key: str) -> None`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `media/import-gate/tests/test_state.py`:
 
@@ -270,12 +270,12 @@ def test_persists_across_instances(tmp_path):
     assert AttemptStore(db).get("radarr:75") == 1
 ```
 
-- [ ] **Step 2: Run it, verify it fails**
+- [x] **Step 2: Run it, verify it fails**
 
 Run: `cd media/import-gate && python -m pytest tests/test_state.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'state'`
 
-- [ ] **Step 3: Implement `state.py`**
+- [x] **Step 3: Implement `state.py`**
 
 ```python
 """Per-title attempt counter, persisted in SQLite so the loop guard survives restarts."""
@@ -318,12 +318,12 @@ class AttemptStore:
             c.execute("DELETE FROM attempts WHERE title_key = ?", (title_key,))
 ```
 
-- [ ] **Step 4: Run it, verify it passes**
+- [x] **Step 4: Run it, verify it passes**
 
 Run: `cd media/import-gate && python -m pytest tests/test_state.py -v`
 Expected: PASS (5 passed)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add media/import-gate/state.py media/import-gate/tests/test_state.py
@@ -345,7 +345,7 @@ git commit -m "feat(import-gate): persistent per-title attempt counter"
   - `media_probe.probe(path: str) -> ProbeResult` (raises `media_probe.ProbeError` if ffprobe fails/file unreadable).
   - `media_probe.extract_windows(path: str, stream_index: int, out_dir: str, windows: int, seconds: int, skip_fraction: float, duration_sec: float) -> list[str]` (returns paths of extracted wav clips).
 
-- [ ] **Step 1: Write the failing test (uses a tiny generated fixture)**
+- [x] **Step 1: Write the failing test (uses a tiny generated fixture)**
 
 Create `media/import-gate/tests/test_media_probe.py`:
 
@@ -393,12 +393,12 @@ def test_extract_windows_returns_clips(sine_video):
         assert os.path.getsize(c) > 0
 ```
 
-- [ ] **Step 2: Run it, verify it fails**
+- [x] **Step 2: Run it, verify it fails**
 
 Run: `cd media/import-gate && python -m pytest tests/test_media_probe.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'media_probe'`
 
-- [ ] **Step 3: Implement `media_probe.py`**
+- [x] **Step 3: Implement `media_probe.py`**
 
 ```python
 """Thin wrappers over ffprobe/ffmpeg: integrity + stream info, and audio sampling."""
@@ -466,12 +466,12 @@ def extract_windows(path, stream_index, out_dir, windows, seconds,
     return clips
 ```
 
-- [ ] **Step 4: Run it, verify it passes**
+- [x] **Step 4: Run it, verify it passes**
 
 Run: `cd media/import-gate && python -m pytest tests/test_media_probe.py -v`
 Expected: PASS (3 passed). (Requires `ffmpeg`/`ffprobe` on PATH — present in the container and on this host.)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add media/import-gate/media_probe.py media/import-gate/tests/test_media_probe.py
@@ -493,7 +493,7 @@ git commit -m "feat(import-gate): ffprobe integrity/streams + ffmpeg window extr
   - `validator.validate(path: str, original_language_name: str, expected_runtime_min: int | None, settings, transcribe_fn) -> Verdict`.
   - `transcribe_fn(clip_path: str) -> tuple[str, float]` is injected (returns `(lang_code, probability)`) so tests don't need the real model. Production passes a closure over a loaded `WhisperModel`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `media/import-gate/tests/test_validator.py`:
 
@@ -560,12 +560,12 @@ def test_transcribe_error_sets_errored_not_reject(eng_clip):
     assert v.errored is True and v.ok is True  # errored gate does not quarantine
 ```
 
-- [ ] **Step 2: Run it, verify it fails**
+- [x] **Step 2: Run it, verify it fails**
 
 Run: `cd media/import-gate && python -m pytest tests/test_validator.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'validator'`
 
-- [ ] **Step 3: Implement `validator.py`**
+- [x] **Step 3: Implement `validator.py`**
 
 ```python
 """Decide pass/reject for one imported file. Integrity first (cheap), then whisper."""
@@ -633,12 +633,12 @@ def validate(path, original_language_name, expected_runtime_min, settings, trans
                    f"orig={orig_code}, no audio stream confidently matched")
 ```
 
-- [ ] **Step 4: Run it, verify it passes**
+- [x] **Step 4: Run it, verify it passes**
 
 Run: `cd media/import-gate && python -m pytest tests/test_validator.py -v`
 Expected: PASS (5 passed)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add media/import-gate/validator.py media/import-gate/tests/test_validator.py
@@ -661,7 +661,7 @@ git commit -m "feat(import-gate): integrity + whisper language verdict"
   - `find_grab_history_id(download_id: str) -> int | None` (`GET /api/v3/history?downloadId=...`, find `eventType == "grabbed"`)
   - `mark_failed(history_id: int) -> None` (`POST /api/v3/history/failed/{id}`)
 
-- [ ] **Step 1: Write the failing test (HTTP mocked via a fake session)**
+- [x] **Step 1: Write the failing test (HTTP mocked via a fake session)**
 
 Create `media/import-gate/tests/test_arr_client.py`:
 
@@ -737,12 +737,12 @@ def test_mark_failed():
     assert s.calls[0][1] == "http://radarr:7878/api/v3/history/failed/6"
 ```
 
-- [ ] **Step 2: Run it, verify it fails**
+- [x] **Step 2: Run it, verify it fails**
 
 Run: `cd media/import-gate && python -m pytest tests/test_arr_client.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'arr_client'`
 
-- [ ] **Step 3: Implement `arr_client.py`**
+- [x] **Step 3: Implement `arr_client.py`**
 
 ```python
 """Minimal Sonarr/Radarr v3 API wrapper for the self-heal steps."""
@@ -791,12 +791,12 @@ class ArrClient:
         self._req("POST", f"/api/v3/history/failed/{history_id}")
 ```
 
-- [ ] **Step 4: Run it, verify it passes**
+- [x] **Step 4: Run it, verify it passes**
 
 Run: `cd media/import-gate && python -m pytest tests/test_arr_client.py -v`
 Expected: PASS (5 passed)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add media/import-gate/arr_client.py media/import-gate/tests/test_arr_client.py
@@ -821,7 +821,7 @@ git commit -m "feat(import-gate): Sonarr/Radarr API client for self-heal"
 
 **Webhook payload shape (verified against the live API):** import events arrive as `eventType: "Download"` (Radarr) / `"Download"` (Sonarr). Radarr payload has `movie: {id, title, originalLanguage: {name}, ...}`, `movieFile: {id, path, relativePath}`, `isUpgrade`, `downloadId`. Sonarr has `series: {id, title, originalLanguage: {name}}`, `episodeFile: {id, path}`, `episodes: [...]`, `downloadId`. A `eventType: "Test"` ping must return 200 without doing anything.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `media/import-gate/tests/test_app.py`:
 
@@ -926,12 +926,12 @@ def test_loop_guard_stops_after_max(ctx):
                for _, m in ctx.rec.notifications)
 ```
 
-- [ ] **Step 2: Run it, verify it fails**
+- [x] **Step 2: Run it, verify it fails**
 
 Run: `cd media/import-gate && python -m pytest tests/test_app.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'app'`
 
-- [ ] **Step 3: Implement `notify.py`**
+- [x] **Step 3: Implement `notify.py`**
 
 ```python
 """ntfy push (best-effort; never raises into the caller)."""
@@ -950,7 +950,7 @@ def push(ntfy_url: str, title: str, tags: str, priority: int, message: str) -> N
         pass
 ```
 
-- [ ] **Step 4: Implement `app.py`**
+- [x] **Step 4: Implement `app.py`**
 
 ```python
 """Flask webhook receiver + self-heal orchestration."""
@@ -1083,17 +1083,17 @@ if __name__ == "__main__":  # production entrypoint
     application.run(host="0.0.0.0", port=8080)
 ```
 
-- [ ] **Step 5: Run it, verify it passes**
+- [x] **Step 5: Run it, verify it passes**
 
 Run: `cd media/import-gate && python -m pytest tests/test_app.py -v`
 Expected: PASS (4 passed)
 
-- [ ] **Step 6: Run the whole suite**
+- [x] **Step 6: Run the whole suite**
 
 Run: `cd media/import-gate && python -m pytest -v`
 Expected: PASS (all tasks' tests green)
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add media/import-gate/notify.py media/import-gate/app.py media/import-gate/tests/test_app.py
@@ -1115,7 +1115,7 @@ git commit -m "feat(import-gate): webhook orchestration, quarantine, self-heal, 
 - Consumes: everything above.
 - Produces: a running container reachable at `http://172.39.0.17:8080/webhook`.
 
-- [ ] **Step 1: Write the Dockerfile**
+- [x] **Step 1: Write the Dockerfile**
 
 ```dockerfile
 FROM python:3.12-slim
@@ -1133,7 +1133,7 @@ EXPOSE 8080
 CMD ["python", "app.py"]
 ```
 
-- [ ] **Step 2: Write `.dockerignore`**
+- [x] **Step 2: Write `.dockerignore`**
 
 ```text
 tests/
@@ -1141,7 +1141,7 @@ __pycache__/
 *.pyc
 ```
 
-- [ ] **Step 3: Add the compose service** (`media/compose.yaml`, after the `ntfy` block, matching the repo's banner style)
+- [x] **Step 3: Add the compose service** (`media/compose.yaml`, after the `ntfy` block, matching the repo's banner style)
 
 ```yaml
   ###############################################
@@ -1176,7 +1176,7 @@ __pycache__/
       start_period: 30s
 ```
 
-- [ ] **Step 4: Add env vars**
+- [x] **Step 4: Add env vars**
 
 `media/.env` (real values; NOT committed):
 
@@ -1194,7 +1194,7 @@ RADARR_API_KEY=
 SONARR_API_KEY=
 ```
 
-- [ ] **Step 5: Build and start**
+- [x] **Step 5: Build and start**
 
 Run:
 ```bash
@@ -1204,7 +1204,7 @@ docker compose logs import-gate | tail -20
 ```
 Expected: container `Up`, log shows Flask listening on `0.0.0.0:8080`. First run downloads the whisper `small` model (one-time).
 
-- [ ] **Step 6: Health + Test-event smoke check**
+- [x] **Step 6: Health + Test-event smoke check**
 
 Run:
 ```bash
@@ -1213,7 +1213,7 @@ curl -s -X POST http://172.39.0.17:8080/webhook -H 'Content-Type: application/js
 ```
 Expected: `{"status": "ok"}` then `{"status":"test-ok"}`.
 
-- [ ] **Step 7: Wire the *arr Webhook connections** (both Sonarr and Radarr, via API)
+- [x] **Step 7: Wire the *arr Webhook connections** (both Sonarr and Radarr, via API)
 
 Run (Radarr shown; repeat for Sonarr at `172.39.0.3:8989`):
 ```bash
@@ -1227,11 +1227,11 @@ curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" 
 ```
 Expected: HTTP 201 with the created notification JSON.
 
-- [ ] **Step 8: Layer-0 config (cheap grab-time filter)** — document, don't over-build
+- [x] **Step 8: Layer-0 config (cheap grab-time filter)** — document, don't over-build
 
 In Sonarr/Radarr UI: set each library's **Language Profile** (Sonarr) / and confirm Radarr's language handling so that releases *tagged* with a non-original language are deprioritized/rejected at grab time. This is configuration; record what was set in `media/README.md`. (No code — reduces how often the gate must run.)
 
-- [ ] **Step 9: Real-fixture end-to-end** (the Russian-audio case)
+- [x] **Step 9: Real-fixture end-to-end** (the Russian-audio case)
 
 Heat (1995) is already in the library as a RuTracker remux (`originalLanguage=English`, likely Russian primary audio) — a live positive case. Trigger a manual re-check by re-sending its import webhook payload, or run the validator directly inside the container against the mounted path:
 ```bash
@@ -1248,11 +1248,11 @@ print(validate(path,'English',170,s,tr))
 ```
 Expected: a `Verdict` — if the remux's original English track is present it should be `ok`; if it is Russian-only it should be `wrong-language`. Either way this proves the whisper path runs end-to-end on a real file. **Do not** wire auto-quarantine against the live library until this dry-run result is reviewed.
 
-- [ ] **Step 10: Migrate the existing manual quarantine out of the library**
+- [x] **Step 10: Migrate the existing manual quarantine out of the library**
 
 Move `/mnt/f/Media/_quarantena` (58 GB: "O Negocio audio russo", "AHS corrupt") to `/mnt/d/quarantine/arr_server/` so nothing sits inside `${LIBRARY}`. Extract ~2-3 min sample clips first if keeping fixtures is desired; the full files can then be deleted at the user's discretion. Nothing is auto-deleted.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add media/import-gate/Dockerfile media/import-gate/.dockerignore \

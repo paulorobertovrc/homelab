@@ -251,6 +251,35 @@ services:
       retries: 3
 
   ###############################################
+  # TAILSCALE-NTFY — official Tailscale client (separate from the host's
+  # Headscale-connected tailscaled) whose only job is `tailscale serve`:
+  # gives ntfy a real HTTPS URL (*.ts.net, auto Let's Encrypt) for the
+  # browser Notifications API, which requires a secure context.
+  # Runs in its own container network namespace -> cannot touch the host's
+  # Headscale routing tables. Joins servarr_network to reach ntfy by name.
+  ###############################################
+  tailscale-ntfy:
+    image: tailscale/tailscale:latest
+    container_name: tailscale-ntfy
+    # No `hostname:` here on purpose: it would shadow Docker's DNS resolution
+    # of the real "ntfy" service (self-collision -> proxies to itself).
+    # TS_HOSTNAME below controls the Tailscale-visible node name instead.
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_TS_NTFY:-172.39.0.16}
+    environment:
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_HOSTNAME=ntfy
+      - TS_AUTHKEY=${TS_AUTHKEY:?Set TS_AUTHKEY in media/.env (generate at login.tailscale.com/admin/settings/keys)}
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/tailscale-ntfy:/var/lib/tailscale
+
+  ###############################################
   # ADDARR — Telegram bot: DM a title -> adds + searches in Sonarr/Radarr
   # Talks only to Sonarr/Radarr APIs; doesn't touch files, doesn't ride gluetun.
   # Secrets (bot token, allowlist, password) live in ${CONFIG_ROOT}/addarr (not in git).

@@ -44,11 +44,23 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
         else:
             media = payload["series"]
             media_file = payload["episodeFile"]
-            episode_ids = "-".join(str(e["id"]) for e in payload.get("episodes", []))
+            episodes = payload.get("episodes", [])
+            episode_ids = "-".join(str(e["id"]) for e in episodes)
             media_id = f"{media['id']}-{episode_ids}" if episode_ids else str(media["id"])
             title = media.get("title", "?")
             orig_lang = media.get("originalLanguage", {}).get("name", "")
+            # Sonarr's webhook carries no per-file runtime; fetch the series'
+            # average episode runtime and scale by the number of episodes in
+            # this file (multi-episode files). Defensive: any lookup failure or
+            # missing/zero runtime skips the duration floor (never blocks a good
+            # import over a transient Sonarr outage).
             runtime = None
+            try:
+                per_episode = arr.get_series(media["id"]).get("runtime")
+                if per_episode:
+                    runtime = per_episode * max(len(episodes), 1)
+            except Exception as e:
+                logger.warning("could not fetch series runtime for %s: %s", title, e)
             file_id = media_file["id"]
             delete_file = arr.delete_episodefile
 

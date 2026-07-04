@@ -171,6 +171,75 @@ def test_per_episode_loop_guard_independent_budgets(ctx):
     assert ctx.rec.deleted_episode[-1] == 320
 
 
+def _sonarr_runtime_ctx(tmp_path, fake_arr):
+    """Build an app whose validate_fn records the expected_runtime_min it
+    receives, so we can assert what floor app.py computed for a Sonarr event."""
+    captured = {}
+    lib = tmp_path / "media"; lib.mkdir()
+    quar = tmp_path / "quar"; quar.mkdir()
+    src = lib / "The Wire"; src.mkdir()
+    f = src / "ep.mkv"; f.write_bytes(b"x" * 100)
+
+    settings = SimpleNamespace(
+        library_root=str(lib), quarantine_root=str(quar),
+        ntfy_url="http://ntfy/arr-media", max_attempts=3,
+    )
+
+    from state import AttemptStore
+    store = AttemptStore(str(tmp_path / "s.db"))
+
+    def validate_fn(path, original_language_name, expected_runtime_min):
+        captured["runtime"] = expected_runtime_min
+        return Verdict(True, "ok", "")
+
+    app = create_app(settings, fake_arr, fake_arr, store,
+                     validate_fn=validate_fn, notify_fn=lambda *a: None)
+    return SimpleNamespace(app=app.test_client(), file=str(f), captured=captured)
+
+
+def test_sonarr_runtime_floor_is_series_runtime_times_episode_count(tmp_path):
+    class FakeArr:
+        def get_series(self, sid): return {"id": sid, "runtime": 55}
+        def delete_episodefile(self, fid): pass
+        def find_grab_history_id(self, did): return None
+        def mark_failed(self, hid): pass
+
+    c = _sonarr_runtime_ctx(tmp_path, FakeArr())
+    p = _sonarr_import(c.file)
+    p["episodes"] = [{"id": 501}, {"id": 502}]  # a 2-episode file
+    c.app.post("/webhook", json=p)
+    assert c.captured["runtime"] == 110  # 55 min/ep * 2 episodes
+
+
+def test_sonarr_runtime_floor_none_when_series_lookup_fails(tmp_path):
+    class FakeArr:
+        def get_series(self, sid): raise RuntimeError("sonarr unreachable")
+        def delete_episodefile(self, fid): pass
+        def find_grab_history_id(self, did): return None
+        def mark_failed(self, hid): pass
+
+    c = _sonarr_runtime_ctx(tmp_path, FakeArr())
+    p = _sonarr_import(c.file)
+    p["episodes"] = [{"id": 501}]
+    r = c.app.post("/webhook", json=p)
+    assert r.status_code == 200
+    assert c.captured["runtime"] is None  # floor skipped, import not blocked
+
+
+def test_sonarr_runtime_floor_none_when_series_runtime_falsy(tmp_path):
+    class FakeArr:
+        def get_series(self, sid): return {"id": sid, "runtime": 0}  # e.g. specials
+        def delete_episodefile(self, fid): pass
+        def find_grab_history_id(self, did): return None
+        def mark_failed(self, hid): pass
+
+    c = _sonarr_runtime_ctx(tmp_path, FakeArr())
+    p = _sonarr_import(c.file)
+    p["episodes"] = [{"id": 501}]
+    c.app.post("/webhook", json=p)
+    assert c.captured["runtime"] is None
+
+
 def test_reject_quarantines_and_selfheals_sonarr(ctx):
     r = ctx.app.post("/webhook", json=_sonarr_import(ctx.file))
     assert r.status_code == 200

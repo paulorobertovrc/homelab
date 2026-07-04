@@ -146,4 +146,8 @@ if __name__ == "__main__":  # production entrypoint
         AttemptStore(os.path.join(s.state_dir, "attempts.db")),
         validate_fn, _push,
     )
-    application.run(host="0.0.0.0", port=8080)
+    # Production WSGI server (single process, shared whisper model). waitress
+    # over gunicorn on purpose: gunicorn's forked workers would each load a
+    # separate copy of the whisper model into RAM.
+    from waitress import serve
+    serve(application, host="0.0.0.0", port=8080)

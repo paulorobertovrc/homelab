@@ -214,7 +214,8 @@ services:
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     networks:
-      - servarr_network
+      servarr_network:
+        ipv4_address: ${SET_IP_RECYCLARR:-172.39.0.14}
     environment:
       - TZ=${TZ:-America/Cuiaba}
       - CRON_SCHEDULE=@daily

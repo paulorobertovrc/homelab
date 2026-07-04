@@ -12,8 +12,12 @@ RETENTION=14
 STAMP="$(date +%Y-%m-%d_%H%M%S)"
 ARCHIVE="${DEST}/appdata-${STAMP}.tar.gz"
 LOG="${DEST}/backup.log"
+NTFY_URL="http://localhost:8095/arr-media"
 
 log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
+notify() { curl -s -m 10 -H "Title: $1" -H "Tags: $2" -H "Priority: ${3:-3}" -d "$4" "$NTFY_URL" >/dev/null || true; }
+on_error() { notify "Backup appdata FALHOU" "x,warning" 5 "arr-backup.sh falhou (exit $?). Log: $LOG"; }
+trap on_error ERR
 
 mkdir -p "$DEST"
 
@@ -52,3 +56,4 @@ for f in "${OLD[@]:-}"; do
 done
 
 log "DONE ($(ls -1 "${DEST}"/appdata-*.tar.gz | wc -l) archives retained)"
+notify "Backup appdata OK" "white_check_mark" 3 "${ARCHIVE##*/} (${SIZE})"

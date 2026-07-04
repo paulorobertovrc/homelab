@@ -157,14 +157,18 @@ services:
   ###############################################
   # FLARESOLVERR — Cloudflare-bypass proxy for Prowlarr indexers
   # (needed by 1337x, EZTV; not by YTS/TPB/LimeTorrents)
+  # Shares gluetun's netns (network_mode: service:gluetun) so its egress IP
+  # matches Prowlarr's (also on gluetun) — Cloudflare ties its clearance
+  # cookie to the solving IP, so solver and requester must share one.
   ###############################################
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
     container_name: flaresolverr
     restart: unless-stopped
-    networks:
-      servarr_network:
-        ipv4_address: ${SET_IP_FLARESOLVERR:-172.39.0.5}
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - TZ=${TZ:-America/Cuiaba}
       - LOG_LEVEL=info

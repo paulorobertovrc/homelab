@@ -251,6 +251,27 @@ services:
       retries: 3
 
   ###############################################
+  # ADDARR — Telegram bot: DM a title -> adds + searches in Sonarr/Radarr
+  # Talks only to Sonarr/Radarr APIs; doesn't touch files, doesn't ride gluetun.
+  # Secrets (bot token, allowlist, password) live in ${CONFIG_ROOT}/addarr (not in git).
+  ###############################################
+  addarr:
+    image: waterboy1602/addarr:latest
+    container_name: addarr
+    restart: unless-stopped
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_ADDARR:-172.31.0.15}
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/addarr/config.yaml:/app/config.yaml:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/addarr/chatid.txt:/app/chatid.txt
+      - ${CONFIG_ROOT:-/docker/appdata}/addarr/allowlist.txt:/app/allowlist.txt:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/addarr/admin.txt:/app/admin.txt:ro
+      - ${CONFIG_ROOT:-/docker/appdata}/addarr/logs:/app/logs
+
+  ###############################################
   # HOMEPAGE — single dashboard for the whole stack
   # Widgets pull each app's API (live counts/queues/speeds); container status via docker socket (ro).
   # Config lives in ${CONFIG_ROOT}/homepage (not in git — holds API keys).

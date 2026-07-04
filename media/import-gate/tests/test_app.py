@@ -1,4 +1,5 @@
 import json
+import logging
 import shutil
 import os
 import subprocess
@@ -238,6 +239,40 @@ def test_sonarr_runtime_floor_none_when_series_runtime_falsy(tmp_path):
     p["episodes"] = [{"id": 501}]
     c.app.post("/webhook", json=p)
     assert c.captured["runtime"] is None
+
+
+def test_pass_path_logs_info_so_healthy_imports_are_visible(tmp_path, caplog):
+    # Observability: waitress does not log per-request access lines, and the
+    # PASS path is otherwise silent -> a healthy gate would be invisible in
+    # `docker logs`. A confident PASS must emit an INFO line naming the title.
+    lib = tmp_path / "media"; lib.mkdir()
+    quar = tmp_path / "quar"; quar.mkdir()
+    src = lib / "Heat (1995)"; src.mkdir()
+    f = src / "Heat.mkv"; f.write_bytes(b"x" * 100)
+
+    settings = SimpleNamespace(
+        library_root=str(lib), quarantine_root=str(quar),
+        ntfy_url="http://ntfy/arr-media", max_attempts=3,
+    )
+    from state import AttemptStore
+    store = AttemptStore(str(tmp_path / "s.db"))
+
+    class FakeArr:
+        def delete_moviefile(self, fid): pass
+        def delete_episodefile(self, fid): pass
+        def find_grab_history_id(self, did): return None
+        def mark_failed(self, hid): pass
+
+    app = create_app(settings, FakeArr(), FakeArr(), store,
+                     validate_fn=lambda **kw: Verdict(True, "ok", "orig=en, stream 0 matches"),
+                     notify_fn=lambda *a: None)
+    client = app.test_client()
+
+    with caplog.at_level(logging.INFO, logger="app"):
+        r = client.post("/webhook", json=_radarr_import(str(f)))
+    assert r.status_code == 200
+    assert any(rec.levelno == logging.INFO and "Heat" in rec.message
+               for rec in caplog.records)
 
 
 def test_reject_quarantines_and_selfheals_sonarr(ctx):

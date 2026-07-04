@@ -80,6 +80,10 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
             return jsonify(status="errored-passed")
 
         if verdict.ok:
+            # INFO so healthy imports are visible in `docker logs` (waitress
+            # logs no per-request access lines; the reject/errored paths log,
+            # but the PASS path would otherwise be silent).
+            logger.info("%s: passed (%s)", title, verdict.detail)
             return jsonify(status="passed")
 
         # --- reject: loop guard, quarantine, self-heal ---
@@ -128,6 +132,13 @@ if __name__ == "__main__":  # production entrypoint
     from validator import validate as _validate
     from notify import push as _push
     from faster_whisper import WhisperModel
+
+    # INFO so per-import decisions (incl. the PASS path) reach `docker logs`;
+    # waitress logs no request access lines of its own.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     s = Settings.from_env()
     model = WhisperModel(s.whisper_model, device="cpu", compute_type="int8")

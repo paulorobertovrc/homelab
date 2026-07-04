@@ -52,6 +52,14 @@ def test_corrupt_file_rejected_without_whisper(tmp_path):
     assert v.ok is False and v.reason == "corrupt"
 
 
+def test_tied_confident_votes_passes(eng_clip):
+    # Two windows, each confident, but for two DIFFERENT non-original languages
+    # in a 1-1 tie -> must NOT reject (ties/ambiguous confident evidence -> pass).
+    calls = iter([("ru", 0.9), ("fr", 0.9)])
+    v = validate(eng_clip, "English", 1, _settings(), lambda p: next(calls))
+    assert v.ok is True
+
+
 def test_transcribe_error_sets_errored_not_reject(eng_clip):
     def boom(_):
         raise RuntimeError("model exploded")

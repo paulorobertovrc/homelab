@@ -3,7 +3,7 @@ import tempfile
 from collections import Counter
 from dataclasses import dataclass
 
-from languages import same_language, to_code
+from languages import to_code
 import media_probe
 
 
@@ -53,11 +53,14 @@ def validate(path, original_language_name, expected_runtime_min, settings, trans
                     if prob >= settings.lang_prob_threshold:
                         votes.append(code)
                 if votes:
-                    winner, _ = Counter(votes).most_common(1)[0]
-                    if winner == orig_code:
-                        return Verdict(True, "ok", f"orig={orig_code}, stream {stream_index} matches")
-                    # Confident, but for a different language than expected.
-                    confident_mismatch = winner
+                    counts = Counter(votes).most_common()
+                    winner, top_count = counts[0]
+                    tied = len(counts) > 1 and counts[1][1] == top_count
+                    if not tied:
+                        if winner == orig_code:
+                            return Verdict(True, "ok", f"orig={orig_code}, stream {stream_index} matches")
+                        # Confident, but for a different language than expected.
+                        confident_mismatch = winner
     except Exception as e:  # gate failure -> never quarantine
         return Verdict(True, "ok", f"gate error: {e}", errored=True)
 

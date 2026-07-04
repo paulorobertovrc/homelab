@@ -7,3 +7,9 @@ media/*.json
 
 # App configs/DBs live on the host (/docker/appdata), never in the repo
 appdata/
+
+# import-gate: local test venv, bytecode, and test-generated state/fixtures
+media/import-gate/.venv/
+media/import-gate/**/__pycache__/
+media/import-gate/tests/fixtures/
+media/import-gate/**/*.db

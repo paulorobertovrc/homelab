@@ -41,3 +41,42 @@ set_format() {  # label base key field want
 echo "== naming formats =="
 set_format Sonarr "$S" "$SK" seriesFolderFormat "$SFMT"
 set_format Radarr "$R" "$RK" movieFolderFormat  "$RFMT"
+
+if [ "${1:-}" = "--reconcile" ]; then
+  execute=false; [ "${2:-}" = "--yes" ] && execute=true
+  echo "== reconcile untagged managed folders (execute=$execute) =="
+
+  # Sonarr series whose path lacks a {tvdb-...} tag.
+  api GET "$S/api/v3/series" "$SK" \
+    | jq -c '.[] | select((.path|test("\\{tvdb-"))|not) | {id,title,year,tvdbId,path}' \
+    | while read -r row; do
+        id=$(jq -r .id     <<<"$row"); title=$(jq -r .title <<<"$row")
+        year=$(jq -r .year <<<"$row"); tvdb=$(jq -r .tvdbId <<<"$row")
+        path=$(jq -r .path <<<"$row"); parent=$(dirname "$path")
+        new="$parent/$title ($year) {tvdb-$tvdb}"
+        echo "  Sonarr: '$path'"
+        echo "       -> '$new'"
+        if $execute; then
+          body=$(api GET "$S/api/v3/series/$id" "$SK" | jq --arg p "$new" '.path=$p')
+          api PUT "$S/api/v3/series/$id?moveFiles=true" "$SK" "$body" >/dev/null
+          echo "          moved."
+        fi
+      done
+
+  # Radarr movies whose path lacks a {tmdb-...} tag.
+  api GET "$R/api/v3/movie" "$RK" \
+    | jq -c '.[] | select((.path|test("\\{tmdb-"))|not) | {id,title,year,tmdbId,path}' \
+    | while read -r row; do
+        id=$(jq -r .id     <<<"$row"); title=$(jq -r .title <<<"$row")
+        year=$(jq -r .year <<<"$row"); tmdb=$(jq -r .tmdbId <<<"$row")
+        path=$(jq -r .path <<<"$row"); parent=$(dirname "$path")
+        new="$parent/$title ($year) {tmdb-$tmdb}"
+        echo "  Radarr: '$path'"
+        echo "       -> '$new'"
+        if $execute; then
+          body=$(api GET "$R/api/v3/movie/$id" "$RK" | jq --arg p "$new" '.path=$p')
+          api PUT "$R/api/v3/movie/$id?moveFiles=true" "$RK" "$body" >/dev/null
+          echo "          moved."
+        fi
+      done
+fi

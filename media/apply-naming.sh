@@ -47,24 +47,12 @@ if [ "${1:-}" = "--reconcile" ]; then
   echo "== reconcile untagged managed folders (execute=$execute) =="
 
   # Sonarr series whose path lacks a {tvdb-...} tag.
-  #
-  # GUARD: tvdbId 74205 is "Band of Brothers (2001)" — its existing tag is
-  # `{tmdb-74205}`, but 74205 is actually its tvdbId (its real tmdbId is 4613),
-  # so it falls through this "no {tvdb-" filter like the genuinely broken
-  # items. Unlike those, it's populated (10 files, ~157GB) and actively used
-  # in Plex, and the fix was deliberately deferred to a separate manual task
-  # (see git log for the review that found this). Do NOT let an automated
-  # sweep move this folder. Remove this guard once the tag is corrected by hand.
   api GET "$S/api/v3/series" "$SK" \
     | jq -c '.[] | select((.path|test("\\{tvdb-"))|not) | {id,title,year,tvdbId,path}' \
     | while read -r row; do
         id=$(jq -r .id     <<<"$row"); title=$(jq -r .title <<<"$row")
         year=$(jq -r .year <<<"$row"); tvdb=$(jq -r .tvdbId <<<"$row")
         path=$(jq -r .path <<<"$row"); parent=$(dirname "$path")
-        if [ "$tvdb" = "74205" ]; then
-          echo "  Sonarr: skipping $title ($year) — known mislabeled tag, deferred, see git log"
-          continue
-        fi
         new="$parent/$title ($year) {tvdb-$tvdb}"
         echo "  Sonarr: '$path'"
         echo "       -> '$new'"

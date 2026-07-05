@@ -1,10 +1,13 @@
 """Decide pass/reject for one imported file. Integrity first (cheap), then whisper."""
+import logging
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
 
 from languages import to_code
 import media_probe
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -39,6 +42,7 @@ def validate(path, original_language_name, expected_runtime_min, settings, trans
 
     # 2. Whisper on each audio stream; pass as soon as one stream is confidently original.
     confident_mismatch = None
+    any_sample_ok = False
     try:
         for stream_index, _ in enumerate(result.audio_langs):
             with tempfile.TemporaryDirectory() as tmp:
@@ -49,7 +53,16 @@ def validate(path, original_language_name, expected_runtime_min, settings, trans
                 )
                 votes = []
                 for clip in clips:
-                    code, prob = transcribe_fn(clip)
+                    try:
+                        code, prob = transcribe_fn(clip)
+                    except Exception as e:
+                        # One unusable sample must not blind the gate to the rest.
+                        # A stream shorter than the container yields a 0-sample tail
+                        # clip, on which faster-whisper raises "max() ... is empty".
+                        # Skip that sample; log it so systematic failures stay visible.
+                        logger.warning("whisper failed on a sample of %s; skipping it: %s", path, e)
+                        continue
+                    any_sample_ok = True
                     if prob >= settings.lang_prob_threshold:
                         votes.append(code)
                 if votes:
@@ -61,13 +74,18 @@ def validate(path, original_language_name, expected_runtime_min, settings, trans
                             return Verdict(True, "ok", f"orig={orig_code}, stream {stream_index} matches")
                         # Confident, but for a different language than expected.
                         confident_mismatch = winner
-    except Exception as e:  # gate failure -> never quarantine
+    except Exception as e:  # extraction/other failure -> gate error, never quarantine
         return Verdict(True, "ok", f"gate error: {e}", errored=True)
 
     if confident_mismatch:
         # At least one stream was confidently NOT the original language.
         return Verdict(False, "wrong-language",
                        f"orig={orig_code}, detected={confident_mismatch}")
+
+    if not any_sample_ok:
+        # Every whisper call failed (e.g. a broken model) -> systematic gate
+        # failure. Loud fail-open (never quarantine), visible via the errored path.
+        return Verdict(True, "ok", "gate error: no audio sample could be analysed", errored=True)
 
     # No stream produced a confident detection either way -> can't judge; pass (don't destroy).
     return Verdict(True, "ok", f"orig={orig_code}, no confident detection")

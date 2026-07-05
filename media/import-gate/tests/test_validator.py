@@ -61,8 +61,27 @@ def test_tied_confident_votes_passes(eng_clip):
 
 
 def test_transcribe_error_sets_errored_not_reject(eng_clip):
+    # EVERY sample fails whisper (e.g. a broken model) -> errored gate, loud
+    # fail-open, no quarantine. Total failure must stay observable.
     def boom(_):
         raise RuntimeError("model exploded")
 
     v = validate(eng_clip, "English", 1, _settings(), boom)
     assert v.errored is True and v.ok is True  # errored gate does not quarantine
+
+
+def test_partial_transcribe_failure_uses_good_votes(eng_clip):
+    # Real bug: a short stream's tail window yields a 0-sample clip and whisper
+    # raises `max() iterable argument is empty` on it. That single bad sample must
+    # NOT abort the whole file (fail-open); the remaining good samples must decide.
+    seq = iter([ValueError("max() iterable argument is empty"), ("en", 0.95)])
+
+    def one_bad_clip(_):
+        nxt = next(seq)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    v = validate(eng_clip, "English", 1, _settings(sample_windows=2), one_bad_clip)
+    assert v.errored is False        # one unusable sample is not a gate failure
+    assert v.ok is True and v.reason == "ok"

@@ -169,6 +169,22 @@ matches, confirm.
   healthcheck). The **qBittorrent** widget authenticates via qBittorrent's *subnet whitelist*
   (`WebUI\AuthSubnetWhitelist=172.39.0.0/24`) instead of a stored password — only stack
   containers sit on that subnet, so no plaintext qbit password lives in the dashboard config.
+
+### `apply-naming.sh` — Plex-standard root-folder tags
+
+Sets Sonarr/Radarr folder formats to the Plex-recommended tagged form
+(`Title (Year) {tvdb-id}` / `{tmdb-id}`) so new library folders match the agent.
+Idempotent — safe to re-run; the naming config otherwise lives only in
+`/docker/appdata` (outside git), so this script is its version-controlled record.
+
+```bash
+./apply-naming.sh              # set the two folder formats (no-op if already set)
+./apply-naming.sh --reconcile        # report managed folders still missing a tag (dry-run)
+./apply-naming.sh --reconcile --yes  # move those folders to the tagged name (app moves the files)
+```
+
+File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only root folders.
+
 - **Backups** — `scripts/arr-backup.sh` via systemd timer `arr-backup.timer` (daily
   04:30, `Persistent=true`). Tars `/docker/appdata` → `D:\backups\arr_server`
   (survives a WSL reset), keeps 14. Restore: stop stack, extract the tar over

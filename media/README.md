@@ -197,6 +197,17 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
   API keys live in `/docker/appdata/recyclarr/recyclarr.yml` (not in git).
   ⚠️ 4K-strict: a title with no 4K release won't grab until one exists. To also
   accept 1080p as a fallback, widen the profile's `qualities`.
+- **Download cleanup (qBittorrent share limits)** — a completed torrent is
+  auto-removed **with its data** at **ratio 2** / **7 days of seeding** / **24h
+  seeding inactivity** (`max_ratio_act=3`; ⚠️ qBit 5.x enum is non-sequential:
+  `3` = remove+files, `2` = super-seeding — verify in `views/preferences.html`
+  before changing). Safe because import *copies* to `F:\Media` (cross-filesystem)
+  — `/data/torrents` is a transient cache. Caveats: the seeding clocks only tick
+  while the stack runs (downtime ⇒ wall-clock age ≫ counter); the limits hit
+  **every** completed torrent — give a personal (non-*arr) torrent a per-torrent
+  share limit of "No limit" if its data must survive. Stalled *downloads* aren't
+  covered (share limits apply only after completion) — blocklist/re-search those
+  in Sonarr/Radarr.
 - **Subtitles (Bazarr)** — profile **EN + PT-BR**, external `.srt` only
   (`use_embedded_subs=false`, so Plex never has to burn). Providers:
   **OpenSubtitles.com** (primary, verified downloading en + pt-BR) + `podnapisi`

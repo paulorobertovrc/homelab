@@ -5,7 +5,8 @@ import os
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (InaccessibleMessage, InlineKeyboardButton,
+                      InlineKeyboardMarkup, Update)
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, Defaults, filters)
 
@@ -48,7 +49,8 @@ async def send_digest(app: Application, trigger: str) -> None:
             deps["store"], cfg, _now_iso())
     except Exception:
         log.exception("digest falhou (%s)", trigger)
-        notify.push(cfg.ntfy_url, "suggest-bot", f"Digest falhou ({trigger}) — ver logs")
+        await asyncio.to_thread(notify.push, cfg.ntfy_url, "suggest-bot",
+                                f"Digest falhou ({trigger}) — ver logs")
         await app.bot.send_message(cfg.telegram_chat_id,
                                    "❌ Não consegui montar as sugestões (Jellyseerr fora?).")
         return
@@ -63,11 +65,20 @@ async def send_digest(app: Application, trigger: str) -> None:
             url = cards.poster_url(s)
             kwargs = dict(caption=cards.caption(s), parse_mode="HTML",
                           reply_markup=keyboard_for(s))
-            if url:
-                await app.bot.send_photo(cfg.telegram_chat_id, url, **kwargs)
-            else:
+            try:
+                if url:
+                    try:
+                        await app.bot.send_photo(cfg.telegram_chat_id, url, **kwargs)
+                        continue
+                    except Exception:
+                        log.exception("poster falhou (%s/%s) — caindo para texto",
+                                      s.title, s.tmdb_id)
                 await app.bot.send_message(cfg.telegram_chat_id, kwargs.pop("caption"),
                                            parse_mode="HTML", reply_markup=keyboard_for(s))
+            except Exception:
+                # um card ruim (poster inacessível, rate-limit, etc.) não pode abortar
+                # o resto do digest nem deixar de marcar o horário de envio.
+                log.exception("card falhou (%s/%s) — pulando", s.title, s.tmdb_id)
     deps["store"].set_last_digest_at(_now_iso())
     log.info("digest enviado (%s): %d sugestões", trigger, len(suggestions))
 
@@ -84,6 +95,11 @@ async def on_sugira(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _edit_status(query, kind: str) -> None:
     msg = query.message
+    if isinstance(msg, InaccessibleMessage):
+        # Cartões com mais de ~48h chegam como InaccessibleMessage (só chat/message_id/date,
+        # sem caption/edit_caption) — editar é impossível; a ação já foi feita e o feedback
+        # do q.answer() já foi dado, então só desistimos silenciosamente da edição visual.
+        return
     if msg.caption is not None:
         await msg.edit_caption(msg.caption + status_suffix(kind), reply_markup=None)
     else:
@@ -93,7 +109,8 @@ async def _edit_status(query, kind: str) -> None:
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg, deps = context.bot_data["cfg"], context.bot_data["deps"]
     q = update.callback_query
-    if q.message is None or q.message.chat_id != cfg.telegram_chat_id:
+    # .chat.id existe tanto em Message quanto em InaccessibleMessage; .chat_id não.
+    if q.message is None or q.message.chat.id != cfg.telegram_chat_id:
         await q.answer()
         return
     try:
@@ -132,7 +149,11 @@ async def _post_init(app: Application) -> None:
                                   cfg.digest_weekday, cfg.digest_hour,
                                   cfg.catchup_grace_days):
         log.info("janela do digest perdida — catch-up no boot")
-        await send_digest(app, "catch-up")
+        try:
+            await send_digest(app, "catch-up")
+        except Exception:
+            # digest falho no boot nunca pode derrubar o processo (post_init do PTB).
+            log.exception("catch-up do digest falhou no boot — seguindo sem travar o processo")
 
 
 def main() -> None:

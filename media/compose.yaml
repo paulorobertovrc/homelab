@@ -334,6 +334,33 @@ services:
       start_period: 30s
 
   ###############################################
+  # JELLYSEERR — portal de descoberta e requests (fork do Overseerr)
+  # Discover TMDB + watchlist Plex + botão "pedir" -> Sonarr/Radarr.
+  # Egress normal (TMDB/plex.tv/host Plex) — não ride no gluetun, como radarr/sonarr.
+  # API key (Settings -> General) é consumida pelo suggest-bot.
+  ###############################################
+  jellyseerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    restart: unless-stopped
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_JELLYSEERR:-172.31.0.18}
+    ports:
+      - 5055:5055
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+      - LOG_LEVEL=info
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/jellyseerr:/app/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:5055/api/v1/status || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  ###############################################
   # HOMEPAGE — single dashboard for the whole stack
   # Widgets pull each app's API (live counts/queues/speeds); container status via docker socket (ro).
   # Config lives in ${CONFIG_ROOT}/homepage (not in git — holds API keys).

@@ -1,3 +1,4 @@
+import sqlite3
 from types import SimpleNamespace
 
 from pipeline import build_digest
@@ -40,8 +41,10 @@ class FakeTrakt:
 class FakeMdb:
     def __init__(self, table=None):
         self._table = table or {}
+        self.calls = 0
 
     def ratings(self, media_type, tmdb_id):
+        self.calls += 1
         return self._table.get((media_type, tmdb_id), {})
 
 
@@ -109,3 +112,63 @@ def test_cut_to_digest_size(tmp_path):
     jelly = FakeJelly(trending=[_t(500 + i, f"T{i}") for i in range(10)])
     got, _ = build_digest(jelly, FakeTrakt(), FakeMdb(), _store(tmp_path), CFG, NOW)
     assert len(got) == CFG.digest_size
+
+
+def test_watchlist_also_in_trending_dedupes_to_watchlist(tmp_path):
+    jelly = FakeJelly(
+        watchlist=[{"media_type": "movie", "tmdb_id": 603, "title": "Matrix"}],
+        trending=[_t(603, "Matrix", score=9.0)],
+        details={("movie", 603): _t(603, "Matrix")},
+    )
+    got, _ = build_digest(jelly, FakeTrakt(), FakeMdb(), _store(tmp_path), CFG, NOW)
+    assert [(s.source, s.tmdb_id) for s in got] == [("watchlist", 603)]
+
+
+def test_watchlist_respects_store_dedup(tmp_path):
+    store = _store(tmp_path)
+    store.mark("movie", 603, DISMISSED, NOW)
+    jelly = FakeJelly(
+        watchlist=[{"media_type": "movie", "tmdb_id": 603, "title": "Matrix"}],
+        details={("movie", 603): _t(603, "Matrix")},
+    )
+    got, _ = build_digest(jelly, FakeTrakt(), FakeMdb(), store, CFG, NOW)
+    assert got == []
+
+
+def test_ratings_enrichment_populates_suggestions(tmp_path):
+    mdb = FakeMdb({("movie", 603): {"imdb": 7.5, "rt": 90}, ("movie", 551): {"imdb": 8.0, "rt": 95}})
+    jelly = FakeJelly(
+        watchlist=[{"media_type": "movie", "tmdb_id": 603, "title": "Matrix"}],
+        trending=[_t(551, "High")],
+        details={("movie", 603): _t(603, "Matrix")},
+    )
+    got, _ = build_digest(jelly, FakeTrakt(), mdb, _store(tmp_path), CFG, NOW)
+    assert [s.tmdb_id for s in got] == [603, 551]
+    assert got[0].ratings == {"imdb": 7.5, "rt": 90}
+    assert got[1].ratings == {"imdb": 8.0, "rt": 95}
+
+
+def test_shortlist_limits_mdblist_calls(tmp_path):
+    mdb = FakeMdb()
+    jelly = FakeJelly(trending=[_t(500 + i, f"T{i}") for i in range(10)])
+    build_digest(jelly, FakeTrakt(), mdb, _store(tmp_path), CFG, NOW)
+    assert mdb.calls == CFG.digest_size * 3  # 0 watchlist picks -> slots=3, shortlist=9
+
+
+def test_final_rank_uses_imdb_between_trakt_ties(tmp_path):
+    mdb = FakeMdb({("movie", 550): {"imdb": 9.0}, ("movie", 551): {"imdb": 7.0}})
+    jelly = FakeJelly(trending=[_t(550, "LowScoreHighImdb", score=6.0),
+                                _t(551, "HighScoreLowImdb", score=9.0)])
+    got, _ = build_digest(jelly, FakeTrakt(), mdb, _store(tmp_path), CFG, NOW)
+    assert [s.tmdb_id for s in got] == [550, 551]
+
+
+def test_mark_records_now_iso(tmp_path):
+    store = _store(tmp_path)
+    jelly = FakeJelly(trending=[_t(550, "A")])
+    build_digest(jelly, FakeTrakt(), FakeMdb(), store, CFG, NOW)
+    row = sqlite3.connect(str(tmp_path / "s.db")).execute(
+        "SELECT status, updated_at FROM suggestions WHERE media_type = ? AND tmdb_id = ?",
+        ("movie", 550),
+    ).fetchone()
+    assert row == (SUGGESTED, NOW)

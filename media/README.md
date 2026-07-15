@@ -197,6 +197,15 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
   API keys live in `/docker/appdata/recyclarr/recyclarr.yml` (not in git).
   ⚠️ 4K-strict: a title with no 4K release won't grab until one exists. To also
   accept 1080p as a fallback, widen the profile's `qualities`.
+  ⚠️ **Only this one profile is managed.** The stock profiles (`Any`, `SD`, …,
+  ids 1–6) keep **zero** CF scores — BR-DISK/SDR/tier scoring has no effect
+  there, so anything is grabbable (2026-07-15 incident: 9 movies + 1 series
+  sat on `Any` → two full BDMV discs and an SDR 66 GB remux were grabbed; all
+  items moved to the managed profile). addarr gotcha: `excludedQualityProfiles`
+  in `/docker/appdata/addarr/config.yaml` takes profile **names**, not ids —
+  with ids the exclusion silently no-ops and the Telegram keyboard offers
+  `Any` as the first button (fixed 2026-07-15 with names; only the managed
+  profile remains, so addarr auto-selects it without asking).
 - **Download cleanup (qBittorrent share limits)** — a completed torrent is
   auto-removed **with its data** at **ratio 2** / **7 days of seeding** / **24h
   seeding inactivity** (`max_ratio_act=3`; ⚠️ qBit 5.x enum is non-sequential:
@@ -208,6 +217,19 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
   share limit of "No limit" if its data must survive. Stalled *downloads* aren't
   covered (share limits apply only after completion) — blocklist/re-search those
   in Sonarr/Radarr.
+- **Fake-release guard (qBittorrent "Excluded file names")** — enabled
+  (`Options → Downloads`); matching files inside any new torrent are never
+  downloaded. Patterns: `*.exe *.scr *.bat *.cmd *.com *.lnk *.pif *.vbs *.js
+  *.jse *.wsf *.wsh *.ps1 *.msi *.hta *.reg` (our anti-malware extension —
+  2026-07-15: two fake HotD "episodes" were single 1–1.5 GB `.exe`s served by
+  LimeTorrents; Sonarr's importer already refused them, this stops even the
+  download) plus `*.rar` / `*.r[0-9]*` (TRaSH's own recommendation — no
+  unpackerr in this stack, RARed releases can't import anyway). A torrent whose
+  files are **all** excluded completes instantly at 0 bytes and the *arr shows
+  "no files eligible" — blocklist it and move on. ⚠️ Global setting: a personal
+  torrent that legitimately ships executables needs its files re-enabled by hand
+  (torrent → Content tab). Lives in qBittorrent's config (not in git) — this
+  note is its version-controlled record.
 - **Subtitles (Bazarr)** — profile **EN + PT-BR**, external `.srt` only
   (`use_embedded_subs=false`, so Plex never has to burn). Providers:
   **OpenSubtitles.com** (primary, verified downloading en + pt-BR) + `podnapisi`

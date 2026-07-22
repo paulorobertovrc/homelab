@@ -97,6 +97,7 @@ requests — not just "should work."
   (`172.39.0.3:8989`); SignalR live‑sync confirmed connected to both.
 - **Indexers** (public, no login) — added via Prowlarr, live search verified
   (143 real results for a test query):
+
   | Indexer | Status |
   |---|---|
   | YTS | ✅ added, working |

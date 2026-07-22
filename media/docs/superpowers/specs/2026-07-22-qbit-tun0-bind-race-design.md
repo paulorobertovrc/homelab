@@ -1,6 +1,9 @@
 # Design: blindagem do bind tun0 do qBittorrent (boot race + reconexão)
 
-**Data:** 2026-07-22 · **Status:** aprovado
+**Data:** 2026-07-22 · **Status:** implementado e validado ao vivo em 2026-07-22
+(commits `af85063` + `2f74cfa`, docs `1ab47db`/`f800c36`; validação registrada no plano
+`../plans/2026-07-22-qbit-tun0-bind-race.md`, incluindo o reteste estendido que forçou
+os dois ramos — wait-loop bloqueando de fato e recycle via autoheal)
 
 ## Problema
 

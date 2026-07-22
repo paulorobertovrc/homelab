@@ -30,7 +30,7 @@
 - Consumes: nothing from other tasks (first task).
 - Produces: an `entrypoint:` override on the `qbittorrent` service. Task 2 modifies the same service's `healthcheck:` key — both tasks touch the same YAML block, so Task 2 must be applied after this one lands (sequential, not parallel).
 
-- [ ] **Step 1: Add the entrypoint override to `compose.yaml`**
+- [x] **Step 1: Add the entrypoint override to `compose.yaml`**
 
 Current block (`compose.yaml:71-78`):
 
@@ -80,12 +80,12 @@ Replace with (inserts `entrypoint:` between `network_mode` and `depends_on`):
     environment:
 ```
 
-- [ ] **Step 2: Validate the compose file parses**
+- [x] **Step 2: Validate the compose file parses**
 
 Run: `cd /home/prvrc/dev/homelab/media && docker compose config --quiet`
 Expected: no output, exit code 0. (This only validates YAML/interpolation — it does not start anything.)
 
-- [ ] **Step 3: Boot test — normal `docker compose up` path**
+- [x] **Step 3: Boot test — normal `docker compose up` path**
 
 Run:
 ```bash
@@ -111,7 +111,7 @@ or one/more `[tun0-wait] tun0 sem IPv4; aguardando VPN...` lines followed by
 log tail's most recent bind must show `"tun0:34124"` → `Successfully listening on
 IP. IP: "10.5.0.2"` — **never** `"172.39.0.2"` (eth0) or `"0.0.0.0"`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 cd /home/prvrc/dev/homelab/media
@@ -139,7 +139,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - Consumes: the `qbittorrent` service block as left by Task 1 (entrypoint already in place).
 - Produces: an updated `healthcheck.test` that later tasks (Task 3 docs, Task 4 validation) reference verbatim when describing/verifying behavior.
 
-- [ ] **Step 1: Replace the healthcheck test**
+- [x] **Step 1: Replace the healthcheck test**
 
 Current (comment + healthcheck block, originally `compose.yaml:88-94`):
 
@@ -171,12 +171,12 @@ Replace with:
       start_period: 120s
 ```
 
-- [ ] **Step 2: Validate the compose file parses**
+- [x] **Step 2: Validate the compose file parses**
 
 Run: `cd /home/prvrc/dev/homelab/media && docker compose config --quiet`
 Expected: no output, exit code 0.
 
-- [ ] **Step 3: Apply and confirm healthy**
+- [x] **Step 3: Apply and confirm healthy**
 
 Run:
 ```bash
@@ -188,7 +188,7 @@ docker inspect qbittorrent --format '{{.State.Health.Status}}'
 ```
 Expected: the `ss` line shows something like `LISTEN 0 30 10.5.0.2%tun0:34124 0.0.0.0:*`, and `docker inspect` prints `starting` (still inside `start_period`) or `healthy` — never `unhealthy`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 cd /home/prvrc/dev/homelab/media
@@ -217,7 +217,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - Consumes: the exact `entrypoint` and `healthcheck.test` strings introduced in Tasks 1–2 (quoted verbatim below).
 - Produces: nothing consumed by later tasks — this is documentation only.
 
-- [ ] **Step 1: Append a subsection after the existing "Corroborating signals" paragraph**
+- [x] **Step 1: Append a subsection after the existing "Corroborating signals" paragraph**
 
 Current end of section (`README.md:280-284`):
 
@@ -267,12 +267,12 @@ Design rationale and the full failure-mode matrix:
 `docs/superpowers/specs/2026-07-22-qbit-tun0-bind-race-design.md`.
 ```
 
-- [ ] **Step 2: Confirm the doc renders sensibly**
+- [x] **Step 2: Confirm the doc renders sensibly**
 
 Run: `cd /home/prvrc/dev/homelab/media && sed -n '250,320p' README.md`
 Expected: the new subsection appears directly after the existing "Corroborating signals" paragraph, with no broken Markdown (matched code fences, no stray backticks).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /home/prvrc/dev/homelab/media
@@ -297,7 +297,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 - Consumes: the `entrypoint` wait loop (Task 1) and `healthcheck.test` (Task 2) exactly as committed — this task does not modify either.
 - Produces: a pass/fail record for each scenario, appended to the plan file itself (Step 4 below) so the outcome is preserved next to the plan.
 
-- [ ] **Step 1: Boot scenario — `docker compose restart`**
+- [x] **Step 1: Boot scenario — `docker compose restart`**
 
 Run:
 ```bash
@@ -309,7 +309,7 @@ docker exec qbittorrent grep -E 'Trying to listen|Successfully listening' \
 ```
 Expected: the most recent "Trying to listen" line reads `"tun0:34124"` (not `"0.0.0.0:34124,[::]:34124"`), immediately followed by `Successfully listening on IP. IP: "10.5.0.2"` lines. No `0.0.0.0` or `172.39.0.2` bind in this boot's tail.
 
-- [ ] **Step 2: Race scenario (the decisive test) — daemon-driven restart bypassing `depends_on`**
+- [x] **Step 2: Race scenario (the decisive test) — daemon-driven restart bypassing `depends_on`**
 
 This reproduces the exact incident: restarting both containers directly via the Docker
 Engine (not `docker compose up`), which does not honor `depends_on` ordering.
@@ -329,7 +329,7 @@ wait loop engaged if there was any race at all) followed by `[tun0-wait] tun0 pr
 iniciando qBittorrent.`; the qBittorrent app log's most recent bind is `"tun0:34124"` →
 `10.5.0.2`, never `0.0.0.0`; and the `ss` line is present.
 
-- [ ] **Step 3: VPN redial scenario — recreate tun0 without restarting either container**
+- [x] **Step 3: VPN redial scenario — recreate tun0 without restarting either container**
 
 This targets the previously-untested case: gluetun's own VPN reconnecting mid-run
 (tun0 recreated inside the same network namespace, no container restart).
@@ -357,7 +357,7 @@ Both are acceptable per the spec's failure-mode matrix. If neither occurs (bind 
 wrong and no restart happens after 10 minutes), that is a plan failure — stop and
 re-open the design.
 
-- [ ] **Step 4: Record the outcome in this plan file**
+- [x] **Step 4: Record the outcome in this plan file**
 
 Edit this file (`docs/superpowers/plans/2026-07-22-qbit-tun0-bind-race.md`) to append,
 directly under this Task 4 header, a `**Validation result:**` line stating the date run

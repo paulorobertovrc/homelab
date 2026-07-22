@@ -313,5 +313,12 @@ Two guards close this gap, both in `compose.yaml` on the `qbittorrent` service o
    the `autoheal` service block) recycles it — which re-enters the entrypoint wait on
    the next boot.
 
+During a **sustained** VPN provider outage (tun0 never comes back), this is expected to
+repeat on a ~6-minute cadence (`start_period` + `interval × retries` before `unhealthy`,
+then an immediate autoheal recycle back into the entrypoint's wait) for as long as the
+outage lasts. That churn is the kill-switch working as intended — qBittorrent never
+binds wrong — not a new fault; live-validated 2026-07-22 by holding gluetun's VPN down
+for ~4m15s and observing exactly this cycle.
+
 Design rationale and the full failure-mode matrix:
 `docs/superpowers/specs/2026-07-22-qbit-tun0-bind-race-design.md`.

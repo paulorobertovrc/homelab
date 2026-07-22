@@ -253,3 +253,32 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
 docker exec qbittorrent wget -qO- https://ipinfo.io/ip   # -> a NordVPN Brazil IP
 curl -s https://ipinfo.io/ip                             # -> your real ISP IP (host is NOT on VPN)
 ```
+
+## qBittorrent MUST be bound to `tun0`
+
+`Session\Interface=tun0` / `Session\InterfaceName=tun0` in `qBittorrent.conf`. This is
+both correctness and kill-switch: bound to the tunnel, qBit simply stops if the VPN
+drops instead of falling back to `eth0`.
+
+With the binding left empty ("Any interface") qBit enumerates interfaces at startup
+and can silently come up **without** `tun0` — it then binds `eth0` only, and every
+peer/tracker packet leaves with source `172.39.0.2` (gluetun's `eth0`), hits its
+`ip rule 100 -> table 200 -> eth0`, and dies on the `OUTPUT DROP`. Symptom: the whole
+client goes to 0 peers.
+
+**This failure mode looks exactly like "all my torrents are dead releases."** It is not.
+Every download stalls at once — including ones already at 80%+ — and Radarr reports
+`The download is stalled with no connections`. Before blocklisting anything, check the
+qBit log for the bind list:
+
+```bash
+# Must list 10.5.0.2 (tun0). If it only shows 172.39.0.2 / 127.0.0.1, the bind is wrong.
+docker exec qbittorrent grep -E 'listen on|Successfully listening' \
+  /config/data/logs/qbittorrent.log | tail
+```
+
+Corroborating signals: tracker rows showing `Operation not permitted` (that string is
+EPERM from the firewall, *not* a dead tracker), no `Detected external IP` line in the
+log, and the IP-geolocation DB download timing out. A torrent whose swarm really is
+dead reads `num_complete 0 / num_incomplete 0` — check that *after* confirming the
+bind, never before.

@@ -300,7 +300,7 @@ preferences save forced a rebind.
 Two guards close this gap, both in `compose.yaml` on the `qbittorrent` service only:
 
 1. **Entrypoint wait.** `qbittorrent`'s `entrypoint` blocks in a loop
-   (`until ip -4 addr show tun0 | grep -q inet; do sleep 2; done`) until `tun0` actually
+   (`until ip -4 addr show tun0 2>/dev/null | grep -q inet; do sleep 2; done`) until `tun0` actually
    has an address, before handing off to the image's own `/init`. No timeout — this is
    kill-switch semantics: without a tunnel, qBittorrent must never start.
 2. **Bind-aware healthcheck.** The healthcheck test became

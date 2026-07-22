@@ -282,3 +282,36 @@ EPERM from the firewall, *not* a dead tracker), no `Detected external IP` line i
 log, and the IP-geolocation DB download timing out. A torrent whose swarm really is
 dead reads `num_complete 0 / num_incomplete 0` — check that *after* confirming the
 bind, never before.
+
+### Why this can happen even with `Session\Interface=tun0` already set
+
+`Session\Interface=tun0` being persisted in `qBittorrent.conf` is **not** sufficient on
+its own. Confirmed live on 2026-07-22: `docker compose`'s `depends_on: condition:
+service_healthy` only orders startup when containers are launched via `docker compose
+up`. On a **daemon-driven restart** — host reboot, `dockerd` restart, or a bare `docker
+restart` touching both containers — the Docker Engine restarts each container per its
+own `restart:` policy and does not consult `depends_on` at all. If qBittorrent's process
+starts before gluetun's `tun0` has an IPv4 address, it silently discards the
+`Session\Interface=tun0` setting (no error logged) and falls back to binding
+`0.0.0.0`/`eth0` — the exact failure mode described above. It does **not** self-correct:
+in the observed incident it stayed misbound for 15 minutes until a manual WebUI
+preferences save forced a rebind.
+
+Two guards close this gap, both in `compose.yaml` on the `qbittorrent` service only:
+
+1. **Entrypoint wait.** `qbittorrent`'s `entrypoint` blocks in a loop
+   (`until ip -4 addr show tun0 | grep -q inet; do sleep 2; done`) until `tun0` actually
+   has an address, before handing off to the image's own `/init`. No timeout — this is
+   kill-switch semantics: without a tunnel, qBittorrent must never start.
+2. **Bind-aware healthcheck.** The healthcheck test became
+   `ss -tln | grep -q '%tun0:' && curl -sf ...` — the old version (`curl` alone) only
+   proves the *container's* default route works, and stayed `healthy` for the entire
+   15-minute window of the incident above while qBittorrent itself was bound wrong. The
+   `%tun0` suffix in `ss` output only appears for a socket bound to that device **by
+   name**, so it also survives `tun0` getting a new address on VPN redial. A bad bind
+   flips the container `unhealthy`, and the stack's existing `autoheal` service (see
+   the `autoheal` service block) recycles it — which re-enters the entrypoint wait on
+   the next boot.
+
+Design rationale and the full failure-mode matrix:
+`docs/superpowers/specs/2026-07-22-qbit-tun0-bind-race-design.md`.

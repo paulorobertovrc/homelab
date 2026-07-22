@@ -73,6 +73,26 @@ services:
     image: ghcr.io/hotio/qbittorrent:release
     container_name: qbittorrent
     network_mode: service:gluetun
+    # Guards against the 2026-07-22 boot race: on a daemon-driven restart (host
+    # reboot, dockerd restart, `docker restart` outside `docker compose up`),
+    # Docker restarts each container per its own `restart:` policy and ignores
+    # `depends_on: condition: service_healthy` entirely — that gate is a
+    # compose-CLI construct, not enforced by the Engine. If qBittorrent's
+    # process starts before gluetun's tun0 has an address, it silently
+    # discards `Session\Interface=tun0` and falls back to binding `0.0.0.0`
+    # (eth0), defeating the kill-switch at the bind level. See README.md
+    # "qBittorrent MUST be bound to tun0".
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        trap 'exit 0' TERM INT
+        until ip -4 addr show tun0 2>/dev/null | grep -q inet; do
+          echo "[tun0-wait] tun0 sem IPv4; aguardando VPN..."
+          sleep 2
+        done
+        echo "[tun0-wait] tun0 pronto; iniciando qBittorrent."
+        exec /init
     depends_on:
       gluetun:
         condition: service_healthy

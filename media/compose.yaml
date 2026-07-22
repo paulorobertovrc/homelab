@@ -106,8 +106,14 @@ services:
       - ${CONFIG_ROOT:-/docker/appdata}/qbittorrent:/config
       - ${DOWNLOADS:-/data/torrents}:/data/torrents
     # If gluetun restarts, this loses connectivity -> unhealthy -> autoheal restarts it.
+    # The ss check catches the OTHER failure mode: qBittorrent bound to 0.0.0.0/eth0
+    # instead of tun0 (see the entrypoint comment above and README.md "qBittorrent
+    # MUST be bound to tun0"). `%tun0` in `ss` output only appears for a socket
+    # actually bound to that device by name, so it's immune to tun0 getting a new
+    # IP on VPN redial. A bad bind -> unhealthy -> autoheal recycles the container
+    # -> re-enters the entrypoint's wait-for-tun0 loop on the next boot.
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -m 10 https://www.google.com -o /dev/null || exit 1"]
+      test: ["CMD-SHELL", "ss -tln | grep -q '%tun0:' && curl -sf -m 10 https://www.google.com -o /dev/null || exit 1"]
       interval: 60s
       timeout: 15s
       retries: 4

@@ -286,6 +286,8 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 ### Task 4: Validation — boot, daemon-restart race, and VPN redial
 
+**Validation result:** Run 2026-07-22. All three scenarios passed. Step 1 (`docker compose restart qbittorrent`): clean `tun0:34124` → `10.5.0.2` bind, no `0.0.0.0`/`172.39.0.2`. Step 2 (`docker restart gluetun qbittorrent`, bypassing `depends_on`): entrypoint logged `[tun0-wait] tun0 pronto; iniciando qBittorrent.` (zero `sem IPv4; aguardando` lines — gluetun's tun0 was already up by the time qBittorrent's entrypoint checked, so no actual race this run, but the guard executed correctly); bind stayed clean. Step 3 (VPN stop/start via gluetun control server, no container restart): outcome **(a) self-rebind** — `ss -tln | grep '%tun0:'` showed no match immediately after `{"status":"stopped"}`, then showed `10.5.0.2%tun0:34124` again ~15s after `{"status":"running"}`; `RestartCount` stayed at 0 throughout; the health-check log shows a passing check at 10:20:58 (before the stop) and the next passing check at 10:21:58 (after tun0 was already restored) — no failing check was ever recorded, i.e. the down-window was shorter than the health-check interval and libtorrent rebound on its own before autoheal could have intervened.
+
 **Files:**
 - None modified. This task only runs commands against the live stack to validate Tasks 1–3.
 

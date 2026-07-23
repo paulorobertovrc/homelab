@@ -63,6 +63,24 @@ class FakeStore:
         self.last_digest_calls.append(when_iso)
 
 
+class FakeMessage:
+    """Mensagem normal (não InaccessibleMessage) cuja edição pode falhar sob demanda."""
+
+    def __init__(self, chat_id, text="card", fail_edit=False):
+        self.chat = SimpleNamespace(id=chat_id)
+        self.caption = None
+        self.text = text
+        self._fail_edit = fail_edit
+
+    async def edit_text(self, *a, **kw):
+        if self._fail_edit:
+            raise RuntimeError("telegram recusou a edição")
+
+    async def edit_caption(self, *a, **kw):
+        if self._fail_edit:
+            raise RuntimeError("telegram recusou a edição")
+
+
 class FakeBot:
     def __init__(self, fail_send_photo_first=False, fail_send_message=False):
         self._fail_send_photo_first = fail_send_photo_first
@@ -105,6 +123,25 @@ def test_on_button_inaccessible_message_still_requests():
     assert q.answers == [("Pedido!", False)]  # nenhuma segunda resposta -> nunca tentou editar
 
 
+def test_on_button_add_success_survives_edit_failure():
+    # Regressão: o request/mark já tinham sucesso; se só a edição visual do
+    # cartão falhar depois, o bot não pode reportar "❌ Falhou" (mentira — o
+    # pedido foi feito) nem chamar q.answer() de novo numa query já respondida.
+    msg = FakeMessage(chat_id=123, fail_edit=True)
+    q = FakeQuery(data="add:movie:550", message=msg)
+    jelly, store = FakeJelly(), FakeStore()
+    update = SimpleNamespace(callback_query=q)
+    context = SimpleNamespace(
+        bot_data={"cfg": _cfg(), "deps": {"jelly": jelly, "trakt": None, "mdb": None,
+                                          "store": store}})
+
+    asyncio.run(on_button(update, context))
+
+    assert jelly.requested == [("movie", 550)]
+    assert ("movie", 550, REQUESTED) in store.marked
+    assert q.answers == [("Pedido!", False)]  # só uma resposta, apesar do edit falhar
+
+
 def test_send_digest_continues_after_card_failure():
     suggestions = [
         Suggestion(media_type="movie", tmdb_id=1, title="A", year="2020", overview="",
@@ -135,13 +172,86 @@ def test_send_digest_continues_after_card_failure():
     assert store.last_digest_calls  # não abortou antes de marcar o horário
 
 
+class _RecordingSleep:
+    """Substitui bot._sleep nos testes: registra os delays, nunca dorme de verdade."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, seconds):
+        self.calls.append(seconds)
+
+
+def test_send_digest_retries_transient_failure_then_succeeds():
+    suggestions = [Suggestion(media_type="movie", tmdb_id=1, title="A", year="2020",
+                              overview="", poster_path=None, source="trending",
+                              tmdb_score=7.0)]
+    attempts = []
+
+    def flaky_build_digest(*a, **kw):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError("Jellyseerr flakeou (400 transitório)")
+        return suggestions, []
+
+    orig_build_digest, orig_sleep = bot_mod.build_digest, bot_mod._sleep
+    fake_sleep = _RecordingSleep()
+    bot_mod.build_digest = flaky_build_digest
+    bot_mod._sleep = fake_sleep
+    try:
+        store = FakeStore()
+        fake_bot = FakeBot()
+        app = SimpleNamespace(bot_data={"cfg": _cfg(),
+                                        "deps": {"jelly": None, "trakt": None, "mdb": None,
+                                                "store": store}},
+                              bot=fake_bot)
+        asyncio.run(bot_mod.send_digest(app, "teste"))
+    finally:
+        bot_mod.build_digest, bot_mod._sleep = orig_build_digest, orig_sleep
+
+    assert len(attempts) == 3  # 2 falhas + sucesso na 3ª
+    assert len(fake_sleep.calls) == 2  # um sleep entre cada retry, nenhum após o sucesso
+    assert store.last_digest_calls  # digest foi enviado e carimbado normalmente
+    assert not fake_bot.messages or "❌" not in fake_bot.messages[-1][1]
+
+
+def test_send_digest_exhausts_retries_and_fails_as_before():
+    def always_fails(*a, **kw):
+        raise RuntimeError("Jellyseerr fora de verdade")
+
+    orig_build_digest, orig_sleep = bot_mod.build_digest, bot_mod._sleep
+    orig_push = bot_mod.notify.push
+    fake_sleep = _RecordingSleep()
+    pushed = []
+    bot_mod.build_digest = always_fails
+    bot_mod._sleep = fake_sleep
+    bot_mod.notify.push = lambda *a, **kw: pushed.append(a)
+    try:
+        store = FakeStore()
+        fake_bot = FakeBot()
+        app = SimpleNamespace(bot_data={"cfg": _cfg(),
+                                        "deps": {"jelly": None, "trakt": None, "mdb": None,
+                                                "store": store}},
+                              bot=fake_bot)
+        asyncio.run(bot_mod.send_digest(app, "teste"))
+    finally:
+        bot_mod.build_digest, bot_mod._sleep = orig_build_digest, orig_sleep
+        bot_mod.notify.push = orig_push
+
+    assert len(fake_sleep.calls) == bot_mod._DIGEST_RETRY_ATTEMPTS - 1
+    assert pushed  # alerta ntfy disparado, como antes
+    assert fake_bot.messages and "❌" in fake_bot.messages[-1][1]
+    assert not store.last_digest_calls  # nunca carimba um digest que nunca foi enviado
+
+
 def test_post_init_swallows_digest_errors():
     def boom(*a, **kw):
         raise RuntimeError("pipeline explodiu")
 
-    orig_build_digest = bot_mod.build_digest
+    orig_build_digest, orig_sleep = bot_mod.build_digest, bot_mod._sleep
     orig_push = bot_mod.notify.push
     bot_mod.build_digest = boom
+    bot_mod._sleep = _RecordingSleep()  # sem esperar de verdade os retries
     bot_mod.notify.push = lambda *a, **kw: None  # sem rede real
     try:
         store = FakeStore()
@@ -152,5 +262,5 @@ def test_post_init_swallows_digest_errors():
                               bot=fake_bot)
         asyncio.run(bot_mod._post_init(app))  # não pode propagar
     finally:
-        bot_mod.build_digest = orig_build_digest
+        bot_mod.build_digest, bot_mod._sleep = orig_build_digest, orig_sleep
         bot_mod.notify.push = orig_push

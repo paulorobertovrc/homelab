@@ -387,6 +387,36 @@ services:
       start_period: 60s
 
   ###############################################
+  # SUGGEST-BOT — digest semanal + /sugira no Telegram com botão ➕ -> Jellyseerr
+  # Fontes: trending TMDB (via Jellyseerr) + Trakt + watchlist Plex; notas via MDBList.
+  # Long polling (sem porta exposta); estado SQLite em ${CONFIG_ROOT}/suggest-bot.
+  # Sem healthcheck: processo de long-polling sem endpoint; PTB re-tenta rede
+  # sozinho e restart:unless-stopped cobre crash.
+  ###############################################
+  suggest-bot:
+    build: ./suggest-bot
+    container_name: suggest-bot
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    depends_on:
+      jellyseerr:
+        condition: service_healthy
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_SUGGEST_BOT:-172.31.0.19}
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+      - TELEGRAM_BOT_TOKEN=${SUGGEST_BOT_TOKEN:?Set SUGGEST_BOT_TOKEN in media/.env}
+      - TELEGRAM_CHAT_ID=${SUGGEST_BOT_CHAT_ID:?Set SUGGEST_BOT_CHAT_ID in media/.env}
+      - JELLYSEERR_URL=http://${SET_IP_JELLYSEERR:-172.31.0.18}:5055
+      - JELLYSEERR_API_KEY=${JELLYSEERR_API_KEY:?Set JELLYSEERR_API_KEY in media/.env}
+      - TRAKT_CLIENT_ID=${TRAKT_CLIENT_ID:?Set TRAKT_CLIENT_ID in media/.env}
+      - MDBLIST_API_KEY=${MDBLIST_API_KEY:?Set MDBLIST_API_KEY in media/.env}
+      - NTFY_URL=http://${SET_IP_NTFY:-172.39.0.10}:80/arr-media
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/suggest-bot:/config
+
+  ###############################################
   # HOMEPAGE — single dashboard for the whole stack
   # Widgets pull each app's API (live counts/queues/speeds); container status via docker socket (ro).
   # Config lives in ${CONFIG_ROOT}/homepage (not in git — holds API keys).

@@ -41,19 +41,38 @@ def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
 
 
+# O Jellyseerr proxeia o TMDB; um sub-endpoint (ex. /discover/trending) pode
+# flakear por segundos mesmo com o Jellyseerr saudável — visto ao vivo
+# 2026-07-23. Sem retry, um flake na sexta 18h esvazia o digest da semana
+# inteira (o catch-up só dispara em restart do container). Não muda a
+# semântica de "Jellyseerr fora → propaga": só absorve falhas curtas antes
+# de desistir e propagar como antes.
+_DIGEST_RETRY_ATTEMPTS = 3
+_DIGEST_RETRY_DELAY_S = 30
+_sleep = asyncio.sleep  # indireção só para os testes substituírem (nunca dormir de verdade)
+
+
 async def send_digest(app: Application, trigger: str) -> None:
     cfg, deps = app.bot_data["cfg"], app.bot_data["deps"]
-    try:
-        suggestions, notes = await asyncio.to_thread(
-            build_digest, deps["jelly"], deps["trakt"], deps["mdb"],
-            deps["store"], cfg, _now_iso())
-    except Exception:
-        log.exception("digest falhou (%s)", trigger)
-        await asyncio.to_thread(notify.push, cfg.ntfy_url, "suggest-bot",
-                                f"Digest falhou ({trigger}) — ver logs")
-        await app.bot.send_message(cfg.telegram_chat_id,
-                                   "❌ Não consegui montar as sugestões (Jellyseerr fora?).")
-        return
+    suggestions = notes = None
+    for attempt in range(1, _DIGEST_RETRY_ATTEMPTS + 1):
+        try:
+            suggestions, notes = await asyncio.to_thread(
+                build_digest, deps["jelly"], deps["trakt"], deps["mdb"],
+                deps["store"], cfg, _now_iso())
+            break
+        except Exception:
+            log.exception("digest tentativa %d/%d falhou (%s)", attempt,
+                          _DIGEST_RETRY_ATTEMPTS, trigger)
+            if attempt == _DIGEST_RETRY_ATTEMPTS:
+                await asyncio.to_thread(notify.push, cfg.ntfy_url, "suggest-bot",
+                                        f"Digest falhou ({trigger}) — ver logs")
+                await app.bot.send_message(
+                    cfg.telegram_chat_id,
+                    "❌ Não consegui montar as sugestões depois de várias tentativas "
+                    "(Jellyseerr fora?). Tente /sugira de novo em alguns minutos.")
+                return
+            await _sleep(_DIGEST_RETRY_DELAY_S)
     if not suggestions:
         await app.bot.send_message(cfg.telegram_chat_id, "📭 Sem sugestões novas desta vez.")
     else:
@@ -106,6 +125,16 @@ async def _edit_status(query, kind: str) -> None:
         await msg.edit_text(msg.text + status_suffix(kind), reply_markup=None)
 
 
+async def _safe_edit_status(query, kind: str) -> None:
+    # A mutação real (request/mark) já aconteceu e já foi respondida (q.answer());
+    # uma falha só na edição visual do cartão não pode virar "❌ Falhou" (mentira)
+    # nem um segundo q.answer() numa query já respondida (BadRequest do Telegram).
+    try:
+        await _edit_status(query, kind)
+    except Exception:
+        log.exception("edição do cartão falhou após marcar %s — ação já estava concluída", kind)
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg, deps = context.bot_data["cfg"], context.bot_data["deps"]
     q = update.callback_query
@@ -121,20 +150,22 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action == "add":
         try:
             await asyncio.to_thread(deps["jelly"].request, media_type, tmdb_id)
-            deps["store"].mark(media_type, tmdb_id, REQUESTED, _now_iso())
-            await q.answer("Pedido!")
-            await _edit_status(q, "requested")
         except AlreadyRequested:
             deps["store"].mark(media_type, tmdb_id, REQUESTED, _now_iso())
             await q.answer("Já estava pedido/disponível")
-            await _edit_status(q, "already")
+            await _safe_edit_status(q, "already")
+            return
         except Exception:
             log.exception("request %s/%s falhou", media_type, tmdb_id)
             await q.answer("❌ Falhou — tenta de novo", show_alert=True)  # mantém botões
+            return
+        deps["store"].mark(media_type, tmdb_id, REQUESTED, _now_iso())
+        await q.answer("Pedido!")
+        await _safe_edit_status(q, "requested")
     else:
         deps["store"].mark(media_type, tmdb_id, DISMISSED, _now_iso())
         await q.answer("Dispensado")
-        await _edit_status(q, "dismissed")
+        await _safe_edit_status(q, "dismissed")
 
 
 async def _weekly_job(context: ContextTypes.DEFAULT_TYPE) -> None:

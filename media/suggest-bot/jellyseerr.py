@@ -49,8 +49,10 @@ class JellyseerrClient:
     def trending(self, pages: int = 1) -> list[dict]:
         out = []
         for page in range(1, pages + 1):
-            data = self._get_json("/discover/trending", page=page, language="pt-BR",
-                                  timeWindow="week")  # spec: janela semanal, não diária
+            # Só page/language: Jellyseerr 2.7.3 rejeita params desconhecidos com 400
+            # ("Unknown query parameter 'timeWindow'"). A janela semanal do spec é
+            # inatingível aqui — o proxy TMDB do Jellyseerr usa a janela própria dele.
+            data = self._get_json("/discover/trending", page=page, language="pt-BR")
             for item in data.get("results", []):
                 if item.get("mediaType") not in ("movie", "tv"):
                     continue
@@ -81,5 +83,9 @@ class JellyseerrClient:
             body["seasons"] = "all"  # string literal — pede todas menos specials
         r = self._call("POST", "/request", json=body)
         if r.status_code in (409, 202):  # 202 = NoSeasonsAvailableError (não é erro HTTP)
-            raise AlreadyRequested((r.json() or {}).get("message", f"HTTP {r.status_code}"))
+            try:
+                message = (r.json() or {}).get("message")
+            except ValueError:  # corpo não-JSON não pode mascarar o AlreadyRequested
+                message = None
+            raise AlreadyRequested(message or f"HTTP {r.status_code}")
         r.raise_for_status()

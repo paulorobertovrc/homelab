@@ -33,6 +33,16 @@ def test_trending_normalizes_and_drops_people():
     assert s.calls[0][2]["headers"]["X-Api-Key"] == "KEY"
 
 
+def test_trending_sends_only_supported_params():
+    # Regressão: Jellyseerr 2.7.3 valida a query estritamente e responde
+    # 400 "Unknown query parameter 'timeWindow'" — o endpoint só aceita
+    # page/language (fatos de API verificados no plano). Visto ao vivo 2026-07-23.
+    s = FakeSession()
+    s.responses[("GET", "http://jellyseerr:5055/api/v1/discover/trending")] = FakeResp(200, TRENDING)
+    _client(s).trending()
+    assert s.calls[0][2]["params"] == {"page": 1, "language": "pt-BR"}
+
+
 def test_watchlist_paginates():
     s = FakeSession()
     s.responses[("GET", "http://jellyseerr:5055/api/v1/discover/watchlist")] = FakeResp(200, {
@@ -72,4 +82,18 @@ def test_request_duplicate_and_noseasons_raise_already(code):
     s = FakeSession()
     s.responses[("POST", "http://jellyseerr:5055/api/v1/request")] = FakeResp(code, {"message": "dup"})
     with pytest.raises(AlreadyRequested):
+        _client(s).request("movie", 550)
+
+
+class _NonJsonResp(FakeResp):
+    def json(self):
+        raise ValueError("corpo não é JSON")
+
+
+def test_request_duplicate_with_nonjson_body_still_raises_already():
+    # Regressão: um 409/202 com corpo não-parseável não pode mascarar o
+    # AlreadyRequested atrás de um ValueError não tratado.
+    s = FakeSession()
+    s.responses[("POST", "http://jellyseerr:5055/api/v1/request")] = _NonJsonResp(409)
+    with pytest.raises(AlreadyRequested, match="409"):
         _client(s).request("movie", 550)

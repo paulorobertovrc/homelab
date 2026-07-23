@@ -51,7 +51,8 @@ through the VPN firewall.
 
 Access (WSL mirrored networking → reachable on `localhost`, `<your-lan-ip>`, or Tailscale):
 **Homepage (dashboard) `:7575` ← start here** · qBittorrent `:8090` · Prowlarr `:9696` ·
-Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767`.
+Radarr `:7878` · Sonarr `:8989` · Bazarr `:6767` · Jellyseerr `:5055`.
+(suggest-bot has no port — it lives in Telegram, long-polling only.)
 (Host port 8080 is taken on Windows, so the qBittorrent WebUI is published on 8090 →
 container 8080; the Radarr/Sonarr → qbit link still uses the internal `172.39.0.2:8080`.)
 
@@ -144,6 +145,17 @@ checked, already in place, nothing new configured:**
 
 Webhook connections (`onDownload` + `onUpgrade` → `http://172.39.0.17:8080/webhook`)
 are wired in both apps' Settings → Connect.
+
+### Jellyseerr + suggest-bot — discovery and requests
+
+**Jellyseerr** (`:5055`) is the discovery portal: browse TMDB trending / your Plex
+watchlist and request titles with one click — requests land in Radarr/Sonarr on the
+curated profiles. **suggest-bot** (Telegram, no port) pushes a weekly digest (Friday
+18h) of up to 5 suggestions — TMDB+Trakt trending and Plex watchlist, IMDb/RT
+ratings via MDBList — with ➕/🙈 buttons per card; ➕ requests through Jellyseerr's
+API → Radarr/Sonarr grab it → import-gate validates the download, same as any grab.
+`/sugira` in the bot chat sends a digest on demand. State (dedup history) in
+`${CONFIG_ROOT}/suggest-bot`; design: `docs/superpowers/specs/2026-07-14-suggest-bot-design.md`.
 
 ### Not yet done (needs your review, not automatable)
 

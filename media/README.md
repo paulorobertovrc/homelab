@@ -1,8 +1,8 @@
 # Media stack (Servarr) — homelab WSL2
 
 Radarr / Sonarr / Bazarr / Prowlarr / qBittorrent behind a **NordVPN (NordLynx/WireGuard)**
-kill‑switch (gluetun), Brazil servers. Mullvad config is kept commented in `.env` as a
-fallback. Runs on **WSL2 (Ubuntu 26.04)**; **Plex on the Windows host** serves the library.
+kill‑switch (gluetun), Brazil servers. AirVPN config is staged in `.env.example` for
+port-forwarding. Runs on **WSL2 (Ubuntu 26.04)**; **Plex on the Windows host** serves the library.
 
 ## VPN scope — only the stack, never the machine
 

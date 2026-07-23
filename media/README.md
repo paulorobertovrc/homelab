@@ -254,6 +254,18 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
   `arr-media`.
 - **Self-healing (autoheal)** — restarts any `autoheal=true` container that goes
   unhealthy: gluetun (VPN recovery) and qbit/prowlarr (reconnect if gluetun bounced).
+- **Image updates (Diun)** — `diun` watches every container's image on the Docker
+  socket (mounted **read-only**) and checks for a newer digest **weekly, Monday
+  06:00 local** (`DIUN_WATCH_SCHEDULE=0 6 * * 1`, 30s jitter) plus once on every
+  container start, so a stack reboot self-heals a missed schedule. Notify-only by
+  design — it **never updates anything**; pulling/recreating a container stays a
+  manual, deliberate act. Notifies via ntfy topic **`arr-media`**, same channel as
+  the *arr apps above. ⚠️ `DIUN_PROVIDERS_DOCKER_WATCHBYDEFAULT=true` means it
+  watches the **whole Docker host by default**, not just this stack — on this
+  shared WSL2 box that already picked up unrelated containers from other projects
+  (a `mysql` and a `pgvector` container, live-observed). `import-gate` and
+  `suggest-bot` opt out via a `diun.enable=false` label — they're locally-built
+  images with no registry to check, so a weekly lookup would just error.
 - **Remote access (Tailscale)** — this WSL node is your WSL Tailscale node
   (`<your-tailscale-host>`, `<tailnet-ip>`). All UIs are reachable over the tailnet
   at `http://<your-tailscale-host>:<port>` (encrypted by WireGuard; no LAN

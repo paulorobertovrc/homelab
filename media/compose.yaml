@@ -46,14 +46,19 @@ services:
     volumes:
       - ${CONFIG_ROOT:-/docker/appdata}/gluetun:/gluetun
     environment:
-      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-mullvad}
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-nordvpn}
       - VPN_TYPE=${VPN_TYPE:-wireguard}
       # OpenVPN alternative (leave commented for WireGuard):
       #- OPENVPN_USER=${OPENVPN_USER}
       #- OPENVPN_PASSWORD=${OPENVPN_PASSWORD}
       - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:?Set WIREGUARD_PRIVATE_KEY in media/.env}
-      # WIREGUARD_ADDRESSES: required for Mullvad; NordVPN sets it automatically — leave unset on NordVPN.
+      # WIREGUARD_ADDRESSES: AirVPN requires it (IPv4 only); NordVPN sets it automatically — leave unset on NordVPN.
       - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:-}
+      # AirVPN only (empty/ignored on NordVPN): preshared key from AirVPN's
+      # Config Generator, and the port reserved at airvpn.org/ports (static, per-account).
+      # Empty default keeps this a no-op for providers that don't use them.
+      - WIREGUARD_PRESHARED_KEY=${WIREGUARD_PRESHARED_KEY:-}
+      - FIREWALL_VPN_INPUT_PORTS=${FIREWALL_VPN_INPUT_PORTS:-}
       - SERVER_COUNTRIES=${SERVER_COUNTRIES:-Brazil}
       # Let LAN containers (radarr/sonarr/bazarr) reach prowlarr/qbit through the VPN firewall:
       - FIREWALL_OUTBOUND_SUBNETS=${SERVARR_SUBNET:-172.31.0.0/24}

@@ -44,18 +44,24 @@ def _now_iso() -> str:
 # O Jellyseerr proxeia o TMDB; um sub-endpoint (ex. /discover/trending) pode
 # flakear por segundos mesmo com o Jellyseerr saudável — visto ao vivo
 # 2026-07-23. Sem retry, um flake na sexta 18h esvazia o digest da semana
-# inteira (o catch-up só dispara em restart do container). Não muda a
-# semântica de "Jellyseerr fora → propaga": só absorve falhas curtas antes
-# de desistir e propagar como antes.
-_DIGEST_RETRY_ATTEMPTS = 3
-_DIGEST_RETRY_DELAY_S = 30
+# inteira (o catch-up só dispara em restart do container). Backoff
+# progressivo (não fixo) porque o pior caso não é só um flake curto: um
+# REBOOT DO HOST reinicia os containers no nível do daemon, fora do
+# `depends_on` do compose (que só atua em `docker compose up`) — nesse
+# caminho o Jellyseerr pode ainda estar no cold-boot (start_period de 60s)
+# quando o catch-up dispara no post_init. A janela total (30+60+120=210s)
+# dá folga pra isso sem deixar uma falha real (Jellyseerr de fato fora)
+# demorar tempo desproporcional pra alertar. Não muda a semântica de
+# "Jellyseerr fora → propaga": só absorve falhas antes de desistir.
+_DIGEST_RETRY_DELAYS_S = (30, 60, 120)
 _sleep = asyncio.sleep  # indireção só para os testes substituírem (nunca dormir de verdade)
 
 
 async def send_digest(app: Application, trigger: str) -> None:
     cfg, deps = app.bot_data["cfg"], app.bot_data["deps"]
     suggestions = notes = None
-    for attempt in range(1, _DIGEST_RETRY_ATTEMPTS + 1):
+    total_attempts = len(_DIGEST_RETRY_DELAYS_S) + 1
+    for attempt in range(1, total_attempts + 1):
         try:
             suggestions, notes = await asyncio.to_thread(
                 build_digest, deps["jelly"], deps["trakt"], deps["mdb"],
@@ -63,8 +69,8 @@ async def send_digest(app: Application, trigger: str) -> None:
             break
         except Exception:
             log.exception("digest tentativa %d/%d falhou (%s)", attempt,
-                          _DIGEST_RETRY_ATTEMPTS, trigger)
-            if attempt == _DIGEST_RETRY_ATTEMPTS:
+                          total_attempts, trigger)
+            if attempt == total_attempts:
                 await asyncio.to_thread(notify.push, cfg.ntfy_url, "suggest-bot",
                                         f"Digest falhou ({trigger}) — ver logs")
                 await app.bot.send_message(
@@ -72,7 +78,7 @@ async def send_digest(app: Application, trigger: str) -> None:
                     "❌ Não consegui montar as sugestões depois de várias tentativas "
                     "(Jellyseerr fora?). Tente /sugira de novo em alguns minutos.")
                 return
-            await _sleep(_DIGEST_RETRY_DELAY_S)
+            await _sleep(_DIGEST_RETRY_DELAYS_S[attempt - 1])
     if not suggestions:
         await app.bot.send_message(cfg.telegram_chat_id, "📭 Sem sugestões novas desta vez.")
     else:

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from telegram import Chat, InaccessibleMessage
 
 import bot as bot_mod
-from bot import keyboard_for, on_button, status_suffix
+from bot import keyboard_for, on_button, on_sugira, status_suffix
 from pipeline import Suggestion
 from state import REQUESTED
 
@@ -142,6 +142,65 @@ def test_on_button_add_success_survives_edit_failure():
     assert q.answers == [("Pedido!", False)]  # só uma resposta, apesar do edit falhar
 
 
+def test_on_button_ignores_wrong_chat():
+    # Callback vindo de um chat diferente do dono configurado — nunca deve
+    # tocar a mutação (request/mark), só responder a query sem revelar nada.
+    msg = FakeMessage(chat_id=999)
+    q = FakeQuery(data="add:movie:550", message=msg)
+    jelly, store = FakeJelly(), FakeStore()
+    update = SimpleNamespace(callback_query=q)
+    context = SimpleNamespace(
+        bot_data={"cfg": _cfg(), "deps": {"jelly": jelly, "trakt": None, "mdb": None,
+                                          "store": store}})
+
+    asyncio.run(on_button(update, context))
+
+    assert q.answers == [(None, False)]
+    assert jelly.requested == []
+    assert store.marked == []
+
+
+def test_on_button_ignores_missing_message():
+    q = FakeQuery(data="add:movie:550", message=None)
+    jelly, store = FakeJelly(), FakeStore()
+    update = SimpleNamespace(callback_query=q)
+    context = SimpleNamespace(
+        bot_data={"cfg": _cfg(), "deps": {"jelly": jelly, "trakt": None, "mdb": None,
+                                          "store": store}})
+
+    asyncio.run(on_button(update, context))
+
+    assert q.answers == [(None, False)]
+    assert jelly.requested == []
+
+
+def test_on_sugira_replies_then_delegates_to_send_digest():
+    # Isola a responsabilidade do handler (responder + delegar) do
+    # comportamento de send_digest, já coberto pelos testes dedicados abaixo.
+    calls = []
+
+    async def fake_send_digest(app, trigger):
+        calls.append((app, trigger))
+
+    sent_texts = []
+
+    async def fake_reply_text(text):
+        sent_texts.append(text)
+
+    orig_send_digest = bot_mod.send_digest
+    bot_mod.send_digest = fake_send_digest
+    try:
+        fake_app = SimpleNamespace()
+        update = SimpleNamespace(message=SimpleNamespace(reply_text=fake_reply_text))
+        context = SimpleNamespace(application=fake_app)
+        asyncio.run(on_sugira(update, context))
+    finally:
+        bot_mod.send_digest = orig_send_digest
+
+    assert sent_texts == ["🔎 Buscando sugestões…"]
+    assert calls == [(fake_app, "sob demanda")]
+
+
 def test_send_digest_continues_after_card_failure():
     suggestions = [
         Suggestion(media_type="movie", tmdb_id=1, title="A", year="2020", overview="",
@@ -210,7 +269,8 @@ def test_send_digest_retries_transient_failure_then_succeeds():
         bot_mod.build_digest, bot_mod._sleep = orig_build_digest, orig_sleep
 
     assert len(attempts) == 3  # 2 falhas + sucesso na 3ª
-    assert len(fake_sleep.calls) == 2  # um sleep entre cada retry, nenhum após o sucesso
+    # backoff progressivo: os dois delays entre as 3 tentativas são os dois primeiros da série.
+    assert fake_sleep.calls == list(bot_mod._DIGEST_RETRY_DELAYS_S[:2])
     assert store.last_digest_calls  # digest foi enviado e carimbado normalmente
     assert not fake_bot.messages or "❌" not in fake_bot.messages[-1][1]
 
@@ -238,10 +298,33 @@ def test_send_digest_exhausts_retries_and_fails_as_before():
         bot_mod.build_digest, bot_mod._sleep = orig_build_digest, orig_sleep
         bot_mod.notify.push = orig_push
 
-    assert len(fake_sleep.calls) == bot_mod._DIGEST_RETRY_ATTEMPTS - 1
+    # backoff progressivo completo, na ordem — não é um delay fixo repetido.
+    assert fake_sleep.calls == list(bot_mod._DIGEST_RETRY_DELAYS_S)
     assert pushed  # alerta ntfy disparado, como antes
     assert fake_bot.messages and "❌" in fake_bot.messages[-1][1]
     assert not store.last_digest_calls  # nunca carimba um digest que nunca foi enviado
+
+
+def test_send_digest_reports_no_new_suggestions():
+    def fake_build_digest(*a, **kw):
+        return [], []
+
+    orig_build_digest = bot_mod.build_digest
+    bot_mod.build_digest = fake_build_digest
+    try:
+        store = FakeStore()
+        fake_bot = FakeBot()
+        app = SimpleNamespace(bot_data={"cfg": _cfg(),
+                                        "deps": {"jelly": None, "trakt": None, "mdb": None,
+                                                "store": store}},
+                              bot=fake_bot)
+        asyncio.run(bot_mod.send_digest(app, "teste"))
+    finally:
+        bot_mod.build_digest = orig_build_digest
+
+    assert fake_bot.messages == [(123, "📭 Sem sugestões novas desta vez.")]
+    # "sem sugestões novas" ainda é um digest que rodou com sucesso — carimba.
+    assert store.last_digest_calls
 
 
 def test_post_init_swallows_digest_errors():

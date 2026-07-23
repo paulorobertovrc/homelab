@@ -358,6 +358,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    labels:
+      - diun.enable=false   # locally-built image — no registry to check
 
   ###############################################
   # JELLYSEERR — portal de descoberta e requests (fork do Overseerr)
@@ -415,6 +417,8 @@ services:
       - NTFY_URL=http://${SET_IP_NTFY:-172.39.0.10}:80/arr-media
     volumes:
       - ${CONFIG_ROOT:-/docker/appdata}/suggest-bot:/config
+    labels:
+      - diun.enable=false   # locally-built image — no registry to check
 
   ###############################################
   # HOMEPAGE — single dashboard for the whole stack
@@ -443,3 +447,36 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  ###############################################
+  # DIUN — Docker Image Update Notifier
+  # Watches every container's image digest (docker socket, read-only) and
+  # notifies ntfy topic arr-media when upstream publishes a new one.
+  # Notify-only by design: updating remains a manual, deliberate act.
+  # Locally-built images (import-gate, suggest-bot) opt out via label —
+  # they don't exist in any registry, lookups would just error weekly.
+  ###############################################
+  diun:
+    image: crazymax/diun:latest
+    container_name: diun
+    restart: unless-stopped
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_DIUN:-172.31.0.21}
+    environment:
+      - TZ=${TZ:-America/Cuiaba}
+      - LOG_LEVEL=info
+      - DIUN_WATCH_WORKERS=10
+      # Weekly check, Monday 06:00 local; jitter avoids thundering-herd on registries.
+      - DIUN_WATCH_SCHEDULE=0 6 * * 1
+      - DIUN_WATCH_JITTER=30s
+      # Also check once on container start: makes validation immediate and a
+      # stack reboot self-heals a missed schedule. State db dedups notifications.
+      - DIUN_WATCH_RUNONSTARTUP=true
+      - DIUN_PROVIDERS_DOCKER=true
+      - DIUN_PROVIDERS_DOCKER_WATCHBYDEFAULT=true
+      - DIUN_NOTIF_NTFY_ENDPOINT=http://${SET_IP_NTFY:-172.39.0.10}:80
+      - DIUN_NOTIF_NTFY_TOPIC=arr-media
+    volumes:
+      - ${CONFIG_ROOT:-/docker/appdata}/diun:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro

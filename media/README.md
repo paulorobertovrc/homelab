@@ -1,8 +1,7 @@
 # Media stack (Servarr) — homelab WSL2
 
-Radarr / Sonarr / Bazarr / Prowlarr / qBittorrent behind a **NordVPN (NordLynx/WireGuard)**
-kill‑switch (gluetun), Brazil servers. AirVPN config is staged in `.env.example` for
-port-forwarding. Runs on **WSL2 (Ubuntu 26.04)**; **Plex on the Windows host** serves the library.
+Radarr / Sonarr / Bazarr / Prowlarr / qBittorrent behind an **AirVPN (WireGuard)**
+kill‑switch (gluetun), Brazil server, with port-forwarding (reserved port) for healthy seeding. Runs on **WSL2 (Ubuntu 26.04)**; **Plex on the Windows host** serves the library.
 
 ## VPN scope — only the stack, never the machine
 
@@ -11,8 +10,8 @@ host (Windows, Plex, your browsing, other containers) touches it.
 
 | Component | Egress path |
 |---|---|
-| **qBittorrent** | 🔒 NordVPN (`network_mode: service:gluetun`) |
-| **Prowlarr** | 🔒 NordVPN (`network_mode: service:gluetun`) |
+| **qBittorrent** | 🔒 AirVPN (`network_mode: service:gluetun`) |
+| **Prowlarr** | 🔒 AirVPN (`network_mode: service:gluetun`) |
 | Radarr / Sonarr / Bazarr | 🌐 normal network (talk to TMDB/TVDB metadata; reach qbit/prowlarr through gluetun) |
 | FlareSolverr | 🌐 normal network — **not tunneled**. It fetches 1337x/EZTV pages on Prowlarr's behalf from its own (non-VPN) IP. Only qBittorrent's actual downloads and Prowlarr's own egress are VPN'd. |
 | **Host + Plex + everything else** | 🌐 normal network |
@@ -275,7 +274,7 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
 ## Verify no leak
 
 ```bash
-docker exec qbittorrent wget -qO- https://ipinfo.io/ip   # -> a NordVPN Brazil IP
+docker exec qbittorrent wget -qO- https://ipinfo.io/ip   # -> an AirVPN Brazil IP
 curl -s https://ipinfo.io/ip                             # -> your real ISP IP (host is NOT on VPN)
 ```
 

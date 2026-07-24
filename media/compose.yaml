@@ -58,6 +58,9 @@ services:
       # Config Generator, and the port reserved at airvpn.org/ports (static, per-account).
       # Empty default keeps this a no-op for providers that don't use them.
       - WIREGUARD_PRESHARED_KEY=${WIREGUARD_PRESHARED_KEY:-}
+      # WIREGUARD_MTU: AirVPN's WG configs set MTU=1320; empty default keeps gluetun's
+      # own default (1420) for NordVPN. Wrong MTU = tunnel up but traffic stalls.
+      - WIREGUARD_MTU=${WIREGUARD_MTU:-}
       - FIREWALL_VPN_INPUT_PORTS=${FIREWALL_VPN_INPUT_PORTS:-}
       - SERVER_COUNTRIES=${SERVER_COUNTRIES:-Brazil}
       # Let LAN containers (radarr/sonarr/bazarr) reach prowlarr/qbit through the VPN firewall:

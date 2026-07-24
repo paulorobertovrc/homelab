@@ -66,10 +66,16 @@ services:
       # Let LAN containers (radarr/sonarr/bazarr) reach prowlarr/qbit through the VPN firewall:
       - FIREWALL_OUTBOUND_SUBNETS=${SERVARR_SUBNET:-172.31.0.0/24}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- https://ipinfo.io/ip || exit 1"]
-      interval: ${HEALTH_VPN_DURATION_INITIAL:-30s}
-      timeout: 20s
-      retries: 5
+      # Tightened 2026-07-24: the old 120s interval x 5 retries = ~10min-to-unhealthy
+      # never tripped on the NordVPN flap (intermittent tunnel read "healthy" for 6h,
+      # so autoheal/ntfy never fired). 3 x 30s ~= 90s to unhealthy now, with a
+      # start_period to tolerate the initial VPN connect. (Applies on next gluetun
+      # recreate.) HEALTH_VPN_DURATION_INITIAL in .env is no longer referenced here.
+      test: ["CMD-SHELL", "wget -qO- -T 8 https://ipinfo.io/ip || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
     labels:
       - autoheal=true   # autoheal restarts gluetun if the VPN goes unhealthy
 

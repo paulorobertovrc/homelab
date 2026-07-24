@@ -13,7 +13,7 @@ host (Windows, Plex, your browsing, other containers) touches it.
 | **qBittorrent** | 🔒 AirVPN (`network_mode: service:gluetun`) |
 | **Prowlarr** | 🔒 AirVPN (`network_mode: service:gluetun`) |
 | Radarr / Sonarr / Bazarr | 🌐 normal network (talk to TMDB/TVDB metadata; reach qbit/prowlarr through gluetun) |
-| FlareSolverr | 🌐 normal network — **not tunneled**. It fetches 1337x/EZTV pages on Prowlarr's behalf from its own (non-VPN) IP. Only qBittorrent's actual downloads and Prowlarr's own egress are VPN'd. |
+| **FlareSolverr** | 🔒 AirVPN (`network_mode: service:gluetun`) — shares Prowlarr's tunnel egress on purpose, so Cloudflare's `cf_clearance` cookie is tied to the same IP Prowlarr requests from. |
 | **Host + Plex + everything else** | 🌐 normal network |
 
 If gluetun's tunnel drops, its firewall blocks **all** egress from qbit/prowlarr →

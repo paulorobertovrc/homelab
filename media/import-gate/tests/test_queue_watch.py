@@ -220,6 +220,7 @@ class FakeSettings:
     # indistinguishable from one that reads the setting -- mutation testing proved
     # all three knobs could be replaced by constants with the whole suite still green.
     ntfy_url = "http://ntfy/arr-media"
+    queue_watch_interval_min = 10      # the backwards-jump tolerance
     queue_watch_min_age_min = 45
     queue_watch_max_per_cycle = 2
     queue_watch_preair_enabled = True
@@ -576,3 +577,96 @@ def test_failed_delete_is_not_counted_as_acted():
     acted = watcher.run_once()
     assert acted == []          # nothing was actually removed
     assert notes == []          # and nothing claimed otherwise on the phone
+
+
+# --- the anomaly notification must inform, not assert a cause -----------------
+
+def _cap_breach():
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in (1, 2, 3)]
+    sonarr = FakeArr(records)
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    return notes[0]
+
+
+def test_anomaly_message_lists_the_candidates():
+    """Refusing to act is only half the job: without the list, the operator cannot
+    tell a broken mount from three RARed grabs off one indexer, which is the whole
+    decision the notification exists to support."""
+    _title, _prio, message = _cap_breach()
+    assert "Silo S03E05" in message
+    assert "LimeTorrents" in message
+
+
+def test_anomaly_message_does_not_assert_a_cause():
+    """It used to state 'isso costuma ser falha sistêmica (disco cheio ou
+    desmontado)'. Two common routes to the cap have nothing to do with disk: a
+    batch of RARed releases (qBit excludes *.rar, so they all strand on the same
+    'no files eligible' message), and dry-run, where candidates accumulate because
+    nothing is ever removed."""
+    _title, _prio, message = _cap_breach()
+    assert "disco cheio" not in message
+
+
+def test_anomaly_message_says_when_it_is_only_simulating():
+    """In dry-run the count is cumulative -- nothing leaves the queue -- so the same
+    number means something different from the armed case."""
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in (1, 2, 3)]
+    watcher, notes = _watcher(FakeArr(records), FakeArr(), settings=DryRun())
+    watcher.run_once()
+    assert "SIMULAÇÃO" in notes[0][0] or "simula" in notes[0][2].lower()
+
+
+# --- clock sanity -------------------------------------------------------------
+# Gate B compares airDateUtc against the container clock. A clock running behind
+# makes an ALREADY-AIRED episode look like a pre-air fake, and gate B has no
+# minimum-age wait, so the first cycle after a skew is destructive and skips the
+# re-search. Cross-checking against Sonarr does not help: it is a container on the
+# same Docker host and shares the kernel clock, so host drift moves both together.
+# What is detectable is the transition -- the cycle where time jumps backwards.
+
+def test_clock_jumping_backwards_suspends_the_preair_gate():
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    sonarr.deleted.clear(); notes.clear()
+
+    watcher._now = lambda: NOW - timedelta(hours=48)      # host resumed, clock wrong
+    watcher.run_once()
+    assert sonarr.deleted == []
+    assert any("relógio" in n[2].lower() for n in notes)
+
+
+def test_gate_a_still_runs_after_a_backwards_jump():
+    """Only gate B reads wall-clock against external data. Gate A measures an elapsed
+    delta, and a backwards jump makes items look LESS mature -- safe by itself."""
+    sonarr = FakeArr([_stuck_record()])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(days=9)}}
+    watcher._now = lambda: NOW - timedelta(hours=48)
+    watcher.run_once()
+    assert sonarr.deleted == [(1, True, False)]
+
+
+def test_the_gate_recovers_once_the_clock_is_sane_again():
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    watcher._now = lambda: NOW - timedelta(hours=48)
+    watcher.run_once()
+    sonarr.deleted.clear()
+    watcher._now = lambda: NOW + timedelta(minutes=10)     # NTP corrected
+    watcher.run_once()
+    assert sonarr.deleted == [(1, True, True)]
+
+
+def test_small_backwards_drift_is_not_treated_as_a_jump():
+    """Sub-interval jitter is normal; only a jump bigger than the poll interval
+    means something actually moved the clock."""
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    sonarr.deleted.clear()
+    watcher._now = lambda: NOW - timedelta(seconds=30)
+    watcher.run_once()
+    assert sonarr.deleted == [(1, True, True)]

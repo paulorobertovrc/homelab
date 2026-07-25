@@ -140,10 +140,12 @@ class QueueWatcher:
         self._first_seen = {"sonarr": {}, "radarr": {}}
         self._anomaly_notified = False
         self._dry_run_notified = set()
+        self._last_now = None
 
     def run_once(self) -> list:
         now = self._now()
         settings = self._settings
+        preair_ok = self._clock_is_sane(now, settings)
 
         # Both queues are collected before anything is evaluated. A systemic failure hits
         # both apps at once, so acting on a partial view is exactly what the cap exists to
@@ -162,7 +164,7 @@ class QueueWatcher:
             new_first_seen[kind] = seen
             found = list(stuck)
             # Gate B is Sonarr-only: Radarr's native Minimum Availability covers movies.
-            if kind == "sonarr" and settings.queue_watch_preair_enabled:
+            if kind == "sonarr" and settings.queue_watch_preair_enabled and preair_ok:
                 found += find_preair(groups, now, settings.queue_watch_preair_margin_h)
             for candidate in found:
                 candidate["kind"] = kind
@@ -181,11 +183,29 @@ class QueueWatcher:
             logger.error("queue-watch: %d candidates exceed cap %d; taking no action",
                          len(candidates), cap)
             if not self._anomaly_notified:
+                # List the candidates instead of naming a cause. The previous text
+                # asserted "falha sistêmica (disco cheio ou desmontado)", but two
+                # common routes to the cap have nothing to do with disk: a batch of
+                # RARed releases (qBit excludes *.rar, so they all strand on the same
+                # "no files eligible" message), and dry-run, where candidates
+                # accumulate because nothing is ever removed. Titles + indexers let
+                # the operator tell those apart; a guessed cause actively misleads.
+                listing = "\n".join(
+                    f"· {c['records'][0].get('title', '?')} "
+                    f"[{c['records'][0].get('indexer') or '?'}]"
+                    for c in candidates[:10]
+                )
+                if len(candidates) > 10:
+                    listing += f"\n· … e mais {len(candidates) - 10}"
+                mode = ("SIMULAÇÃO — nada seria removido, e em dry-run a contagem é "
+                        "cumulativa (os itens continuam na fila)."
+                        if settings.queue_watch_dry_run
+                        else "Nenhuma ação tomada.")
                 self._notify(
                     settings.ntfy_url, "⚠️ queue-watch: anomalia em massa", "no_entry", 5,
-                    f"{len(candidates)} itens da fila viraram candidatos a remoção num "
-                    f"único ciclo (teto {cap}). Nenhuma ação tomada — isso costuma ser "
-                    f"falha sistêmica (disco cheio ou desmontado). Verifique à mão.",
+                    f"{len(candidates)} grupos viraram candidatos num único ciclo "
+                    f"(teto {cap}). {mode}\n\n{listing}\n\n"
+                    f"Verifique à mão antes de mexer no teto.",
                 )
                 self._anomaly_notified = True
             return []
@@ -196,6 +216,43 @@ class QueueWatcher:
             if self._act(candidate):
                 acted.append(candidate)
         return acted
+
+    def _clock_is_sane(self, now, settings) -> bool:
+        """False for one cycle after wall-clock time jumps backwards.
+
+        Gate B is the only thing here that compares the local clock against external
+        data (airDateUtc from Sonarr's metadata), and it has no minimum-age wait -- so
+        a clock running behind turns an already-aired episode into an apparent pre-air
+        fake and destroys it on the very first cycle, re-search skipped.
+
+        Cross-checking against Sonarr does NOT solve this: Sonarr is a container on the
+        same Docker host and shares the kernel clock, so host-level drift (the WSL2
+        suspend/resume case) moves both together and the comparison reads zero exactly
+        when the danger is greatest. What is detectable is the transition. A jump
+        larger than one poll interval is not scheduling jitter -- something moved the
+        clock -- so gate B sits out until the next cycle establishes a new baseline.
+
+        Gate A needs no such guard: it measures an elapsed delta against its own
+        first-seen map, and a backwards jump only makes items look less mature.
+        """
+        previous, self._last_now = self._last_now, now
+        if previous is None:
+            return True
+        jump = previous - now
+        if jump <= timedelta(minutes=settings.queue_watch_interval_min):
+            return True
+        logger.error("queue-watch: clock jumped backwards by %s; pre-air gate suspended "
+                     "for this cycle", jump)
+        self._notify(
+            settings.ntfy_url, "⚠️ queue-watch: relógio inconsistente", "no_entry", 4,
+            f"O relógio do container andou {jump} para trás entre dois ciclos.\n\n"
+            f"O portão pre-air ficou suspenso neste ciclo: com o relógio atrasado, "
+            f"um episódio JÁ EXIBIDO parece um grab pre-air e seria removido + "
+            f"blocklistado sem re-busca. O portão A segue ativo (não depende de "
+            f"relógio absoluto).\n\nSe isso se repetir, verifique a sincronia de "
+            f"horário do host.",
+        )
+        return False
 
     def _act(self, candidate) -> bool:
         records = candidate["records"]

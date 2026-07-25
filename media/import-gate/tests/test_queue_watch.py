@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -756,3 +757,96 @@ def test_the_guard_state_stays_bounded():
         watcher._first_seen = {"sonarr": {f"D{n}": NOW - timedelta(minutes=60)}}
         watcher.run_once()
     assert len(watcher._blocklists) <= watcher.BLOCKLIST_MEMORY
+
+
+# --- liveness -----------------------------------------------------------------
+# Every log line in this module was error or warning, so a healthy cycle produced
+# NOTHING. Combined with /health measuring only Flask (deliberate) and run_forever
+# swallowing failures, "polling fine" and "thread died three weeks ago" looked
+# identical in `docker logs`. That ambiguity makes the dry-run soak unmeasurable:
+# its pass condition is silence.
+
+def test_a_healthy_cycle_leaves_a_trace(caplog):
+    sonarr = FakeArr([_stuck_record()])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    with caplog.at_level(logging.INFO, logger="queue_watch"):
+        watcher.run_once()
+    assert "cycle ok" in caplog.text
+
+
+def test_the_trace_carries_the_counts(caplog):
+    sonarr = FakeArr([_stuck_record(rec_id=1, download_id="A"),
+                      _stuck_record(rec_id=2, download_id="B")])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    with caplog.at_level(logging.INFO, logger="queue_watch"):
+        watcher.run_once()
+    assert "2 groups" in caplog.text
+
+
+class _Stalled:
+    """A watcher whose cycles always fail."""
+
+    def __init__(self):
+        self.alerts = []
+        self.cycles = 0
+
+    def run_once(self):
+        self.cycles += 1
+        raise RuntimeError("sonarr unreachable")
+
+    def alert_stalled(self, consecutive, exc):
+        self.alerts.append((consecutive, str(exc)))
+
+
+def test_repeated_cycle_failures_raise_an_alarm():
+    """Both gates are down and nothing says so: /health still reports healthy, because
+    it measures Flask on purpose."""
+    w = _Stalled()
+
+    def sleep_fn(_s):
+        if w.cycles >= 3:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(w, 10, sleep_fn=sleep_fn, alert_after=3)
+    assert w.alerts == [(3, "sonarr unreachable")]
+
+
+def test_the_stall_alarm_does_not_repeat_every_cycle():
+    w = _Stalled()
+
+    def sleep_fn(_s):
+        if w.cycles >= 12:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(w, 10, sleep_fn=sleep_fn, alert_after=3)
+    assert len(w.alerts) == 1
+
+
+def test_a_recovered_cycle_rearms_the_alarm():
+    """A flapping Sonarr must alert again on the next stall, not stay quiet forever."""
+    class Flaky(_Stalled):
+        def run_once(self):
+            self.cycles += 1
+            if self.cycles == 4:      # one good cycle in the middle
+                return []
+            raise RuntimeError("sonarr unreachable")
+
+    w = Flaky()
+
+    def sleep_fn(_s):
+        if w.cycles >= 8:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(w, 10, sleep_fn=sleep_fn, alert_after=3)
+    assert len(w.alerts) == 2
+
+
+def test_the_watcher_alerts_over_ntfy_when_stalled():
+    watcher, notes = _watcher(FakeArr(), FakeArr())
+    watcher.alert_stalled(3, RuntimeError("connection refused"))
+    assert len(notes) == 1
+    assert notes[0][1] >= 4                       # loud enough to reach the phone
+    assert "connection refused" in notes[0][2]

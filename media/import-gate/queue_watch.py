@@ -164,8 +164,10 @@ class QueueWatcher:
 
         candidates = []
         new_first_seen = {}
+        scanned = {}
         for kind, client, records in queues:
             groups = group_by_download_id(records)
+            scanned[kind] = len(groups)
             stuck, seen = find_stuck(groups, now, self._first_seen.get(kind, {}),
                                      settings.queue_watch_min_age_min)
             new_first_seen[kind] = seen
@@ -226,7 +228,34 @@ class QueueWatcher:
                 if not settings.queue_watch_dry_run:
                     self._record_blocklist(candidate)
                 acted.append(candidate)
+
+        # A healthy cycle used to log nothing at all, which made "polling fine" and
+        # "thread died weeks ago" identical in `docker logs` -- /health measures only
+        # the Flask app, on purpose. That ambiguity is fatal to the dry-run soak,
+        # whose pass condition is silence. INFO matches app.py's PASS-path line,
+        # added for the same reason (waitress logs no access lines of its own).
+        logger.info("queue-watch: cycle ok — %d groups (sonarr %d, radarr %d), "
+                    "%d candidates, %d acted",
+                    scanned["sonarr"] + scanned["radarr"], scanned["sonarr"],
+                    scanned["radarr"], len(candidates), len(acted))
         return acted
+
+    def alert_stalled(self, consecutive, exc) -> None:
+        """Called by run_forever once cycles have failed N times in a row.
+
+        Without this a wrong URL, a rotated API key or a proxy returning HTML leaves
+        both gates down indefinitely while the container reports healthy and the logs
+        only whisper at ERROR once per interval.
+        """
+        logger.error("queue-watch: %d consecutive cycle failures; both gates are down",
+                     consecutive)
+        self._notify(
+            self._settings.ntfy_url, "⚠️ queue-watch: parado", "no_entry", 4,
+            f"{consecutive} ciclos seguidos falharam — os dois portões estão fora.\n\n"
+            f"Último erro: {exc}\n\n"
+            f"O container continua 'healthy': o /health mede só o Flask, de propósito, "
+            f"para que uma falha do poller nunca derrube a validação de import.",
+        )
 
     @staticmethod
     def _content_key(candidate):
@@ -393,11 +422,33 @@ def _merge_by_group(candidates: list) -> list:
     return list(merged.values())
 
 
-def run_forever(watcher, interval_min: int, sleep_fn=time.sleep) -> None:
-    """Poll loop. Any cycle failure is logged and swallowed so the thread survives."""
+def run_forever(watcher, interval_min: int, sleep_fn=time.sleep,
+                alert_after: int = 3) -> None:
+    """Poll loop. Any cycle failure is logged and swallowed so the thread survives.
+
+    Surviving is not the same as working: a persistent failure (wrong URL, rotated API
+    key, proxy answering HTML) would otherwise leave both gates down forever, logging
+    once per interval, while the container stays healthy. So consecutive failures are
+    counted and escalated once, and the counter re-arms after any good cycle so a
+    flapping app alerts again rather than going quiet for good.
+    """
+    consecutive = 0
+    alerted = False
     while True:
         try:
             watcher.run_once()
+            consecutive, alerted = 0, False
         except Exception as e:
-            logger.error("queue-watch: cycle failed: %s", e)
+            consecutive += 1
+            logger.error("queue-watch: cycle failed (%d in a row): %s", consecutive, e)
+            if consecutive >= alert_after and not alerted:
+                alerted = True
+                try:
+                    watcher.alert_stalled(consecutive, e)
+                except Exception as alert_error:   # never let the alarm kill the loop
+                    logger.error("queue-watch: could not raise stall alarm: %s",
+                                 alert_error)
+        # Deliberately outside the try: a sleep that raises is unrecoverable, and
+        # retrying it here would spin a hot loop against both *arr APIs. The interval
+        # is floored at 1 in Settings, so the negative-interval case cannot reach here.
         sleep_fn(interval_min * 60)

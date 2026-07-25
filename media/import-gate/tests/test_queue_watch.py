@@ -8,10 +8,11 @@ from queue_watch import (NO_FILES_MSG, QueueWatcher, find_preair, find_stuck,
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
 
 
-def _stuck_record(rec_id=1, download_id="ABC"):
+def _stuck_record(rec_id=1, download_id="ABC", episode_id=None):
     return {
         "id": rec_id,
         "downloadId": download_id,
+        "episodeId": rec_id * 100 if episode_id is None else episode_id,
         "status": "completed",
         "title": "Silo S03E05 MULTI 1080p WEB H264-HiggsBoson",
         "indexer": "LimeTorrents (Prowlarr)",
@@ -117,10 +118,11 @@ def test_pack_with_message_on_one_record_still_matches():
     assert len(candidates[0]["records"]) == 2
 
 
-def _preair_record(hours_ahead, rec_id=1, download_id="ABC"):
+def _preair_record(hours_ahead, rec_id=1, download_id="ABC", episode_id=None):
     return {
         "id": rec_id,
         "downloadId": download_id,
+        "episodeId": rec_id * 100 if episode_id is None else episode_id,
         "status": "downloading",
         "title": "Silo S03E05 MULTI 1080p WEB H264-HiggsBoson",
         "indexer": "LimeTorrents (Prowlarr)",
@@ -220,6 +222,7 @@ class FakeSettings:
     # indistinguishable from one that reads the setting -- mutation testing proved
     # all three knobs could be replaced by constants with the whole suite still green.
     ntfy_url = "http://ntfy/arr-media"
+    max_attempts = 3                   # shared with the webhook self-heal
     queue_watch_interval_min = 10      # the backwards-jump tolerance
     queue_watch_min_age_min = 45
     queue_watch_max_per_cycle = 2
@@ -670,3 +673,86 @@ def test_small_backwards_drift_is_not_treated_as_a_jump():
     watcher._now = lambda: NOW - timedelta(seconds=30)
     watcher.run_once()
     assert sonarr.deleted == [(1, True, True)]
+
+
+# --- the blocklist loop guard -------------------------------------------------
+# Gate A blocklists and asks for a re-search. When the cause is environmental
+# rather than release-specific -- a mount, a path mapping, or a release group that
+# consistently packs in RAR (qBit excludes *.rar, so every one of their releases
+# strands identically) -- the replacement lands in the same state and is
+# blocklisted 15 minutes later. Simulated in review: 13 distinct releases of one
+# episode blocklisted in 6.5h, one group per cycle, so the per-cycle cap never
+# trips. The webhook self-heal already has max_attempts for exactly this shape.
+
+def _blocklist_n_times(n, watcher, sonarr, download_ids):
+    for i, did in enumerate(download_ids[:n]):
+        sonarr.records = [_stuck_record(rec_id=1, download_id=did, episode_id=555)]
+        watcher._first_seen = {"sonarr": {did: NOW - timedelta(minutes=60)}}
+        watcher.run_once()
+
+
+def test_repeated_blocklists_for_one_episode_are_stopped():
+    """The release changes every round, so nothing downstream notices the loop."""
+    sonarr = FakeArr()
+    watcher, notes = _watcher(sonarr, FakeArr())
+    _blocklist_n_times(3, watcher, sonarr, ["R1", "R2", "R3"])
+    assert len(sonarr.deleted) == 3
+
+    _blocklist_n_times(1, watcher, sonarr, ["R4"])
+    assert len(sonarr.deleted) == 3                    # refused, not acted
+    assert any("manual" in n[2].lower() for n in notes)
+
+
+def test_the_give_up_notice_fires_once_not_every_cycle():
+    sonarr = FakeArr()
+    watcher, notes = _watcher(sonarr, FakeArr())
+    _blocklist_n_times(3, watcher, sonarr, ["R1", "R2", "R3"])
+    before = len(notes)
+    _blocklist_n_times(1, watcher, sonarr, ["R4"])
+    _blocklist_n_times(1, watcher, sonarr, ["R5"])
+    _blocklist_n_times(1, watcher, sonarr, ["R6"])
+    assert len(notes) == before + 1
+
+
+def test_a_different_episode_is_unaffected():
+    sonarr = FakeArr()
+    watcher, _ = _watcher(sonarr, FakeArr())
+    _blocklist_n_times(3, watcher, sonarr, ["R1", "R2", "R3"])
+
+    sonarr.records = [_stuck_record(rec_id=7, download_id="OTHER", episode_id=999)]
+    watcher._first_seen = {"sonarr": {"OTHER": NOW - timedelta(minutes=60)}}
+    watcher.run_once()
+    assert sonarr.deleted[-1] == (7, True, False)
+
+
+def test_the_guard_keys_on_content_not_on_the_release():
+    """Keying on downloadId would count every round as a first attempt -- the loop
+    changes release every time, which is the entire problem."""
+    sonarr = FakeArr()
+    watcher, _ = _watcher(sonarr, FakeArr())
+    _blocklist_n_times(4, watcher, sonarr, ["A", "B", "C", "D"])
+    assert len(sonarr.deleted) == 3
+
+
+def test_a_record_without_a_content_id_still_acts():
+    """Defence in depth, not a primary gate: if the identifier is missing the counter
+    cannot function, but the per-cycle cap and the ntfy still apply. Refusing to act
+    here would let a renamed API field disable gate A entirely."""
+    record = _stuck_record(rec_id=4, download_id="NOID")
+    del record["episodeId"]
+    sonarr = FakeArr([record])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher._first_seen = {"sonarr": {"NOID": NOW - timedelta(minutes=60)}}
+    watcher.run_once()
+    assert sonarr.deleted == [(4, True, False)]
+
+
+def test_the_guard_state_stays_bounded():
+    """A long-uptime thread must not accumulate one entry per episode forever."""
+    sonarr = FakeArr()
+    watcher, _ = _watcher(sonarr, FakeArr())
+    for n in range(1200):
+        sonarr.records = [_stuck_record(rec_id=1, download_id=f"D{n}", episode_id=n)]
+        watcher._first_seen = {"sonarr": {f"D{n}": NOW - timedelta(minutes=60)}}
+        watcher.run_once()
+    assert len(watcher._blocklists) <= watcher.BLOCKLIST_MEMORY

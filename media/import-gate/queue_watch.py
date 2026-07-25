@@ -131,6 +131,11 @@ class QueueWatcher:
     watcher wait out the minimum age again, which is the safe direction to fail.
     """
 
+    # How many distinct content ids the loop guard remembers. Acted-on items are rare
+    # (a handful a week), so this is a backstop against unbounded growth in a thread
+    # that runs for months, not a working limit.
+    BLOCKLIST_MEMORY = 1000
+
     def __init__(self, settings, sonarr, radarr, notify_fn, now_fn=None):
         self._settings = settings
         self._sonarr = sonarr
@@ -141,6 +146,8 @@ class QueueWatcher:
         self._anomaly_notified = False
         self._dry_run_notified = set()
         self._last_now = None
+        self._blocklists = {}
+        self._gave_up = set()
 
     def run_once(self) -> list:
         now = self._now()
@@ -213,9 +220,77 @@ class QueueWatcher:
 
         acted = []
         for candidate in candidates:
+            if not self._loop_guard_allows(candidate, settings):
+                continue
             if self._act(candidate):
+                if not settings.queue_watch_dry_run:
+                    self._record_blocklist(candidate)
                 acted.append(candidate)
         return acted
+
+    @staticmethod
+    def _content_key(candidate):
+        """Identifies the CONTENT, not the release.
+
+        Keying on downloadId would count every round of a loop as a first attempt --
+        the release changes each time, which is the entire problem. Returns None when
+        the *arr gave us nothing to key on.
+        """
+        ids = {r.get("episodeId") or r.get("movieId") for r in candidate["records"]}
+        ids.discard(None)
+        if not ids:
+            return None
+        return f"{candidate['kind']}:" + ",".join(str(i) for i in sorted(ids))
+
+    def _loop_guard_allows(self, candidate, settings) -> bool:
+        """False once this content has been blocklisted max_attempts times.
+
+        Gate A blocklists and asks for a re-search, so an environmental cause -- a
+        mount, a path mapping, or a release group that consistently packs in RAR
+        (qBit excludes *.rar, so every one of their releases strands identically) --
+        makes the replacement land in the same state and get blocklisted 15 minutes
+        later. One group per cycle, so the per-cycle cap never trips: review simulated
+        13 distinct releases of one episode blocklisted in 6.5 hours. The webhook
+        self-heal already carries max_attempts for exactly this shape, so this reuses
+        the same budget rather than inventing a knob.
+
+        Defence in depth, not a primary gate: when there is no content id to key on it
+        allows the action and logs. Refusing instead would let one renamed API field
+        silently disable gate A altogether.
+        """
+        key = self._content_key(candidate)
+        if key is None:
+            logger.warning("queue-watch: no episodeId/movieId on %s; loop guard "
+                           "cannot count this item",
+                           candidate["records"][0].get("title", "?"))
+            return True
+        if self._blocklists.get(key, 0) < settings.max_attempts:
+            return True
+        if key not in self._gave_up:
+            self._gave_up.add(key)
+            title = candidate["records"][0].get("title", "?")
+            logger.error("queue-watch: %s blocklisted %d times; giving up on %s",
+                         key, self._blocklists[key], title)
+            self._notify(
+                settings.ntfy_url, "⚠️ queue-watch: desistiu de um item", "no_entry", 4,
+                f"{title}\n\nJá foram {self._blocklists[key]} releases distintas "
+                f"removidas + blocklistadas para este mesmo conteúdo. Trocar de "
+                f"release não está resolvendo, então a causa provavelmente não é a "
+                f"release: verifique mount, path mapping, permissões, ou se o grupo "
+                f"empacota em RAR.\n\nO queue-watch parou de agir neste item — "
+                f"intervenção manual necessária.",
+            )
+        return False
+
+    def _record_blocklist(self, candidate):
+        key = self._content_key(candidate)
+        if key is None:
+            return
+        self._blocklists[key] = self._blocklists.get(key, 0) + 1
+        while len(self._blocklists) > self.BLOCKLIST_MEMORY:
+            oldest = next(iter(self._blocklists))
+            self._blocklists.pop(oldest)
+            self._gave_up.discard(oldest)
 
     def _clock_is_sane(self, now, settings) -> bool:
         """False for one cycle after wall-clock time jumps backwards.

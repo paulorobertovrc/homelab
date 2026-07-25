@@ -403,3 +403,108 @@ def test_real_validator_wired_end_to_end_rejects_wrong_language(tmp_path):
     assert any(name.endswith("Heat.mkv") for name in found)
     assert rec.deleted == [79]
     assert rec.marked_failed == [6]
+
+
+# --- boot wiring for queue-watch -------------------------------------------
+# This block used to live inline in `if __name__ == "__main__"`, where no test
+# could reach it. A review ran mutation testing over it: SIX independent
+# mutations survived the whole suite, including "never call .start()" (ships a
+# container where queue-watch simply does not exist) and "banner always prints
+# DRY-RUN" (the plan's arming procedure uses that exact log line as its proof of
+# which mode is live). Extracted so it can be asserted.
+
+class _FakeThread:
+    instances = []
+
+    def __init__(self, target=None, args=(), daemon=None, name=None):
+        self.target, self.args, self.daemon, self.name = target, args, daemon, name
+        self.started = False
+        _FakeThread.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+
+@pytest.fixture
+def wiring():
+    from app import start_queue_watch
+    _FakeThread.instances = []
+
+    def make(**overrides):
+        settings = SimpleNamespace(
+            sonarr_url="http://sonarr:8989", sonarr_key="S",
+            radarr_url="http://radarr:7878", radarr_key="R",
+            queue_watch_enabled=True, queue_watch_interval_min=10,
+            queue_watch_min_age_min=15, queue_watch_max_per_cycle=3,
+            queue_watch_preair_enabled=True, queue_watch_preair_margin_h=24,
+            queue_watch_dry_run=True, ntfy_url="http://ntfy/arr-media",
+        )
+        for k, v in overrides.items():
+            setattr(settings, k, v)
+        watcher = start_queue_watch(settings, lambda *a: None,
+                                    thread_factory=_FakeThread)
+        return settings, watcher, _FakeThread.instances
+
+    return make
+
+
+def test_thread_is_actually_started(wiring):
+    """Mutation 'build the thread but never .start() it' shipped a container in
+    which the feature silently did not exist, with every test still green."""
+    _s, _w, threads = wiring()
+    assert len(threads) == 1
+    assert threads[0].started is True
+    assert threads[0].daemon is True     # must not block container shutdown
+    assert threads[0].name == "queue-watch"
+
+
+def test_kill_switch_is_honoured(wiring):
+    _s, watcher, threads = wiring(queue_watch_enabled=False)
+    assert threads == []
+    assert watcher is None
+
+
+def test_sonarr_client_lands_in_the_sonarr_slot(wiring):
+    """Swapping the two clients is silent and permanent: the Radarr queue carries
+    no `episode`, so find_preair spares everything and gate B is dead forever
+    while every log line still looks normal."""
+    _s, watcher, _t = wiring()
+    assert watcher._sonarr.kind == "sonarr"
+    assert watcher._sonarr.base_url == "http://sonarr:8989"
+    assert watcher._radarr.kind == "radarr"
+    assert watcher._radarr.base_url == "http://radarr:7878"
+
+
+def test_watcher_gets_its_own_clients_not_the_flask_ones(wiring):
+    """Each ArrClient owns a requests.Session and the webhook path drives its own
+    pair from Flask's request threads."""
+    _s, watcher, _t = wiring()
+    assert watcher._sonarr._session is not watcher._radarr._session
+
+
+def test_configured_interval_reaches_the_loop(wiring):
+    _s, watcher, threads = wiring(queue_watch_interval_min=7)
+    assert threads[0].args == (watcher, 7)
+
+
+def test_banner_says_dry_run_when_simulating(wiring, caplog):
+    with caplog.at_level(logging.INFO, logger="app"):
+        wiring(queue_watch_dry_run=True)
+    assert "DRY-RUN" in caplog.text
+    assert "ARMED" not in caplog.text
+
+
+def test_banner_says_armed_when_armed(wiring, caplog):
+    """The arming procedure's only confirmation. A banner that always prints
+    DRY-RUN would let the operator believe they are simulating while the watcher
+    deletes -- and the mutation that does exactly that passed 93 tests."""
+    with caplog.at_level(logging.INFO, logger="app"):
+        wiring(queue_watch_dry_run=False)
+    assert "ARMED" in caplog.text
+
+
+def test_disabled_banner_is_distinguishable_from_a_started_one(wiring, caplog):
+    with caplog.at_level(logging.INFO, logger="app"):
+        wiring(queue_watch_enabled=False)
+    assert "disabled" in caplog.text
+    assert "started" not in caplog.text

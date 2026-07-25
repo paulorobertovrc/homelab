@@ -126,6 +126,53 @@ def create_app(settings, radarr, sonarr, store, validate_fn, notify_fn):
     return app
 
 
+def start_queue_watch(settings, notify_fn, thread_factory=None):
+    """Start the queue-watch poller in a daemon thread. Returns the watcher, or None.
+
+    Lives here rather than inline in `__main__` so it can be tested: mutation testing
+    found six independent defects that survived the entire suite while this was
+    unreachable, including never calling .start() (feature silently absent) and a
+    banner that always printed DRY-RUN (the operator's only confirmation of which
+    mode is live when arming).
+
+    /health deliberately keeps measuring only the Flask app: a poller failure must
+    never mark the container unhealthy nor disturb import validation, which is the
+    more valuable defence.
+    """
+    from arr_client import ArrClient
+    from queue_watch import QueueWatcher, run_forever
+
+    if not settings.queue_watch_enabled:
+        logger.info("queue-watch: disabled by QUEUE_WATCH_ENABLED")
+        return None
+
+    # Dedicated ArrClients: each one owns a requests.Session, and the clients used by
+    # create_app are driven by Flask's request threads. The requests docs do not state
+    # that Session is thread-safe -- and the codebase shows thread-safety being added
+    # deliberately where it mattered (HTTPDigestAuth keeps state in threading.local),
+    # which suggests it is not a blanket property. A second pair costs nothing.
+    watcher = QueueWatcher(
+        settings,
+        ArrClient(settings.sonarr_url, settings.sonarr_key, "sonarr"),
+        ArrClient(settings.radarr_url, settings.radarr_key, "radarr"),
+        notify_fn,
+    )
+    (thread_factory or threading.Thread)(
+        target=run_forever,
+        args=(watcher, settings.queue_watch_interval_min),
+        daemon=True,
+        name="queue-watch",
+    ).start()
+    logger.info("queue-watch: started in %s (every %d min, min age %d min, cap %d, "
+                "pre-air %s margin %dh)",
+                "DRY-RUN (no deletions)" if settings.queue_watch_dry_run else "ARMED",
+                settings.queue_watch_interval_min, settings.queue_watch_min_age_min,
+                settings.queue_watch_max_per_cycle,
+                "on" if settings.queue_watch_preair_enabled else "off",
+                settings.queue_watch_preair_margin_h)
+    return watcher
+
+
 if __name__ == "__main__":  # production entrypoint
     from config import Settings
     from arr_client import ArrClient
@@ -162,38 +209,7 @@ if __name__ == "__main__":  # production entrypoint
         validate_fn, _push,
     )
 
-    # Queue gates run in a daemon thread. /health deliberately keeps measuring only the
-    # Flask app: a poller failure must never mark the container unhealthy nor disturb
-    # import validation, which is the more valuable defence.
-    if s.queue_watch_enabled:
-        from queue_watch import QueueWatcher, run_forever
-        # Dedicated ArrClients: each one owns a requests.Session, and the clients above are
-        # driven by Flask's request threads. The requests docs do not state that Session is
-        # thread-safe -- and the codebase shows thread-safety being added deliberately where
-        # it mattered (HTTPDigestAuth keeps state in threading.local), which suggests it is
-        # not a blanket property. A second pair of clients costs nothing and removes the
-        # question entirely.
-        watcher = QueueWatcher(
-            s,
-            ArrClient(s.sonarr_url, s.sonarr_key, "sonarr"),
-            ArrClient(s.radarr_url, s.radarr_key, "radarr"),
-            _push,
-        )
-        threading.Thread(
-            target=run_forever,
-            args=(watcher, s.queue_watch_interval_min),
-            daemon=True,
-            name="queue-watch",
-        ).start()
-        logger.info("queue-watch: started in %s (every %d min, min age %d min, cap %d, "
-                    "pre-air %s margin %dh)",
-                    "DRY-RUN (no deletions)" if s.queue_watch_dry_run else "ARMED",
-                    s.queue_watch_interval_min, s.queue_watch_min_age_min,
-                    s.queue_watch_max_per_cycle,
-                    "on" if s.queue_watch_preair_enabled else "off",
-                    s.queue_watch_preair_margin_h)
-    else:
-        logger.info("queue-watch: disabled by QUEUE_WATCH_ENABLED")
+    start_queue_watch(s, _push)
 
     # Production WSGI server (single process, shared whisper model). waitress
     # over gunicorn on purpose: gunicorn's forked workers would each load a

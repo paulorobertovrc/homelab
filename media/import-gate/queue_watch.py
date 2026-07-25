@@ -9,7 +9,7 @@ is fake by construction, and this catches the ones packaged as .mkv, which the e
 guard cannot see.
 """
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -76,3 +76,48 @@ def find_stuck(groups: dict, now, first_seen: dict, min_age_min: int):
                 "gates": ["stuck"],
             })
     return candidates, new_first_seen
+
+
+def _parse_air_date(value):
+    """Returns an aware datetime, or None when missing, malformed, or timezone-naive.
+
+    The naive case matters: `datetime.fromisoformat` accepts a timestamp with no offset
+    and returns a naive object, which then raises TypeError when compared against an aware
+    `now` -- escaping this function and aborting the entire cycle. Rejecting it here turns
+    a crash into a spared group, which is the safe direction.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
+def find_preair(groups: dict, now, margin_h: int):
+    """Groups whose every episode airs beyond now + margin_h.
+
+    The margin is the rule, not a tuning knob: measured over 230 grabs, legitimate
+    releases appeared up to 2.1h before airDateUtc while known fakes ran 116-158h early.
+    `all()` rather than `any()` protects season packs. A missing or unparseable air date
+    spares the whole group -- absent data never authorises action.
+    """
+    threshold = now + timedelta(hours=margin_h)
+    candidates = []
+    for download_id, records in groups.items():
+        air_dates = [_parse_air_date((r.get("episode") or {}).get("airDateUtc"))
+                     for r in records]
+        if not air_dates or any(a is None for a in air_dates):
+            continue
+        if all(a > threshold for a in air_dates):
+            earliest = min(air_dates)
+            candidates.append({
+                "download_id": download_id,
+                "records": records,
+                "gates": ["preair"],
+                "hours_early": round((earliest - now).total_seconds() / 3600, 1),
+            })
+    return candidates

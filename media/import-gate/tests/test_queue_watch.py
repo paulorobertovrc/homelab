@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from queue_watch import NO_FILES_MSG, find_stuck, group_by_download_id
+from queue_watch import NO_FILES_MSG, find_preair, find_stuck, group_by_download_id
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
 
@@ -107,3 +107,83 @@ def test_pack_with_message_on_one_record_still_matches():
     candidates, _ = find_stuck(groups, NOW, {"ABC": NOW - timedelta(minutes=20)}, 15)
     assert len(candidates) == 1
     assert len(candidates[0]["records"]) == 2
+
+
+def _preair_record(hours_ahead, rec_id=1, download_id="ABC"):
+    return {
+        "id": rec_id,
+        "downloadId": download_id,
+        "status": "downloading",
+        "title": "Silo S03E05 MULTI 1080p WEB H264-HiggsBoson",
+        "indexer": "LimeTorrents (Prowlarr)",
+        "episode": {
+            "airDateUtc": (NOW + timedelta(hours=hours_ahead))
+                          .isoformat().replace("+00:00", "Z"),
+        },
+    }
+
+
+def test_real_fake_158h_early_is_caught():
+    """The actual Silo S03E05 .scr case."""
+    candidates = find_preair(group_by_download_id([_preair_record(158)]), NOW, 24)
+    assert [c["download_id"] for c in candidates] == ["ABC"]
+    assert candidates[0]["gates"] == ["preair"]
+    assert candidates[0]["hours_early"] == 158.0
+
+
+def test_legitimate_release_2h_early_is_spared():
+    """Regression guard: Silo S03E04 CAKES was grabbed 2.1h early and is in the library.
+    A naive 'airDateUtc in the future' rule would have blocklisted it."""
+    assert find_preair(group_by_download_id([_preair_record(2.1)]), NOW, 24) == []
+
+
+def test_exactly_on_the_margin_is_spared():
+    assert find_preair(group_by_download_id([_preair_record(24)]), NOW, 24) == []
+
+
+def test_mixed_pack_with_one_aired_episode_is_spared():
+    """An in-flight season pack always has an aired episode; only an all-future group is fake."""
+    records = [_preair_record(158, rec_id=1), _preair_record(-48, rec_id=2)]
+    assert find_preair(group_by_download_id(records), NOW, 24) == []
+
+
+def test_pack_where_every_episode_is_preair_is_caught():
+    records = [_preair_record(158, rec_id=1), _preair_record(182, rec_id=2)]
+    candidates = find_preair(group_by_download_id(records), NOW, 24)
+    assert len(candidates) == 1
+    assert candidates[0]["hours_early"] == 158.0  # reports the earliest
+
+
+def test_record_without_episode_is_spared():
+    record = _preair_record(158)
+    del record["episode"]
+    assert find_preair(group_by_download_id([record]), NOW, 24) == []
+
+
+def test_record_without_air_date_is_spared():
+    record = _preair_record(158)
+    record["episode"] = {}
+    assert find_preair(group_by_download_id([record]), NOW, 24) == []
+
+
+def test_unparseable_air_date_is_spared():
+    record = _preair_record(158)
+    record["episode"]["airDateUtc"] = "not a date"
+    assert find_preair(group_by_download_id([record]), NOW, 24) == []
+
+
+def test_naive_air_date_is_spared_not_crashed():
+    """A timezone-less timestamp parses fine but cannot be compared to an aware `now`:
+    Python raises TypeError, which would escape find_preair and abort the whole cycle.
+    Verified in a prototype. Treat it as unparseable instead."""
+    record = _preair_record(158)
+    record["episode"]["airDateUtc"] = "2026-07-31T04:00:00"
+    assert find_preair(group_by_download_id([record]), NOW, 24) == []
+
+
+def test_date_only_air_date_is_spared_not_crashed():
+    """Sonarr also carries a plain `airDate` (date, no time). If that ever lands in this
+    field it parses to a naive midnight -- same TypeError, same handling."""
+    record = _preair_record(158)
+    record["episode"]["airDateUtc"] = "2026-07-31"
+    assert find_preair(group_by_download_id([record]), NOW, 24) == []

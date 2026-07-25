@@ -150,3 +150,14 @@ def test_delete_queue_item_can_skip_redownload():
     s = FakeSession()
     _client(s).delete_queue_item(42, skip_redownload=True)
     assert s.calls[0][2]["params"]["skipRedownload"] == "true"
+
+
+def test_get_queue_refuses_to_return_a_partial_view():
+    """The last line of defence on the never-judge-a-partial-group invariant. A server
+    that keeps serving records past QUEUE_MAX_PAGES must raise, not quietly hand back a
+    truncated queue -- gate B's all() over a subset is what pagination exists to prevent.
+    Replacing the raise with `return records` used to pass the whole suite."""
+    pages = [[{"id": n}] for n in range(1, 60)]
+    s = PagingSession(pages, total=10_000)
+    with pytest.raises(RuntimeError, match="partial view"):
+        _client(s).get_queue()

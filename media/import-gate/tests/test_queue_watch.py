@@ -84,8 +84,13 @@ def test_record_without_the_message_is_ignored():
 def test_record_not_completed_is_ignored():
     record = _stuck_record()
     record["status"] = "downloading"
-    candidates, _ = find_stuck(group_by_download_id([record]), NOW, {}, 15)
+    candidates, new_seen = find_stuck(group_by_download_id([record]), NOW, {}, 15)
     assert candidates == []
+    # new_seen is the assertion that actually pins the status filter. With an empty
+    # first_seen, `candidates == []` holds either way (seen_at becomes now, so the
+    # item is never mature on its first sighting) -- so without this line the whole
+    # `status != "completed"` check could be deleted with the suite still green.
+    assert new_seen == {}
 
 
 def test_download_id_gone_from_queue_is_pruned():
@@ -210,11 +215,15 @@ class FakeArr:
 
 
 class FakeSettings:
+    # Deliberately NOT the production defaults (15/3/24). When the fake carries the
+    # same numbers the code would hardcode, a test that reads a literal is
+    # indistinguishable from one that reads the setting -- mutation testing proved
+    # all three knobs could be replaced by constants with the whole suite still green.
     ntfy_url = "http://ntfy/arr-media"
-    queue_watch_min_age_min = 15
-    queue_watch_max_per_cycle = 3
+    queue_watch_min_age_min = 45
+    queue_watch_max_per_cycle = 2
     queue_watch_preair_enabled = True
-    queue_watch_preair_margin_h = 24
+    queue_watch_preair_margin_h = 72
     queue_watch_dry_run = False        # the armed behaviour is what most tests assert
 
 
@@ -237,7 +246,7 @@ def test_mature_stuck_group_is_removed_and_notified():
     watcher, notes = _watcher(sonarr, FakeArr())
     watcher.run_once()                     # first sighting only
     assert sonarr.deleted == []
-    watcher._now = lambda: NOW + timedelta(minutes=20)
+    watcher._now = lambda: NOW + timedelta(minutes=50)
     acted = watcher.run_once()
     assert sonarr.deleted == [(1, True, False)]     # gate A wants the re-search
     assert len(acted) == 1
@@ -265,7 +274,7 @@ def test_preair_skips_redownload_but_gate_a_does_not():
 
     stuck = FakeArr([_stuck_record()])
     watcher, _ = _watcher(stuck, FakeArr())
-    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=30)}}
+    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=60)}}
     watcher.run_once()
     assert stuck.deleted[0][2] is False
 
@@ -299,7 +308,7 @@ def test_group_tripping_both_gates_acts_once():
     record["statusMessages"] = [{"title": "t", "messages": [NO_FILES_MSG]}]
     sonarr = FakeArr([record])
     watcher, notes = _watcher(sonarr, FakeArr())
-    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=30)}}
+    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=60)}}
     watcher.run_once()
     assert len(sonarr.deleted) == 1
     assert len(notes) == 1
@@ -344,7 +353,7 @@ def test_preair_disabled_leaves_gate_a_working():
 
     sonarr = FakeArr([_preair_record(158), _stuck_record(rec_id=50, download_id="STUCK")])
     watcher, _ = _watcher(sonarr, FakeArr(), settings=NoPreair())
-    watcher._first_seen = {"sonarr": {"STUCK": NOW - timedelta(minutes=30)}}
+    watcher._first_seen = {"sonarr": {"STUCK": NOW - timedelta(minutes=60)}}
     watcher.run_once()
     assert sonarr.deleted == [(50, True, False)]
 
@@ -435,3 +444,135 @@ def test_run_forever_sleeps_the_configured_interval():
     with pytest.raises(KeyboardInterrupt):
         run_forever(Once(), 10, sleep_fn=sleep_fn)
     assert slept == [600]
+
+
+# --- the knobs are actually read, and the boundaries hold ---------------------
+# FakeSettings deliberately carries non-default values (45/2/72). These tests fail
+# if any of the three is replaced by a hardcoded literal -- which mutation testing
+# showed was possible for all three with the entire suite still green.
+
+def test_cap_comes_from_settings_not_a_literal():
+    """Turning the cap down before arming is the obvious safety move; nothing proved
+    the knob was connected."""
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in (1, 2, 3)]
+    sonarr = FakeArr(records)
+    watcher, notes = _watcher(sonarr, FakeArr())          # cap = 2
+    watcher.run_once()
+    assert sonarr.deleted == []
+    assert "anomalia" in notes[0][0]
+
+
+def test_exactly_at_the_cap_still_acts():
+    """The boundary the cap turns on. `> cap` vs `>= cap` was unpinned."""
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in (1, 2)]
+    sonarr = FakeArr(records)
+    watcher, notes = _watcher(sonarr, FakeArr())          # cap = 2, exactly 2 groups
+    acted = watcher.run_once()
+    assert len(acted) == 2
+    assert sorted(d[0] for d in sonarr.deleted) == [1, 2]
+    assert not any("anomalia" in n[0] for n in notes)
+
+
+def test_min_age_comes_from_settings_not_a_literal():
+    sonarr = FakeArr([_stuck_record()])
+    watcher, _ = _watcher(sonarr, FakeArr())              # min age = 45
+    watcher.run_once()                                    # first sighting
+    watcher._now = lambda: NOW + timedelta(minutes=20)     # past 15, short of 45
+    watcher.run_once()
+    assert sonarr.deleted == []
+
+
+def test_exactly_at_the_min_age_acts():
+    """`>=` vs `>` on the maturity comparison was unpinned."""
+    sonarr = FakeArr([_stuck_record()])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    watcher._now = lambda: NOW + timedelta(minutes=45)
+    watcher.run_once()
+    assert sonarr.deleted == [(1, True, False)]
+
+
+def test_preair_margin_comes_from_settings_not_a_literal():
+    """A 48h-early grab is caught under the production default of 24h and spared
+    under this fake's 72h. A hardcoded 24 would destroy it."""
+    sonarr = FakeArr([_preair_record(48)])
+    watcher, _ = _watcher(sonarr, FakeArr())              # margin = 72
+    watcher.run_once()
+    assert sonarr.deleted == []
+
+
+# --- the Radarr action path ---------------------------------------------------
+
+def test_stuck_radarr_group_is_deleted_via_the_radarr_client():
+    """No test ever deleted a Radarr queue item, so routing every DELETE through the
+    Sonarr client passed the whole suite -- and a queue id that exists in both apps
+    would then remove the WRONG item. This is the path that destroys movie torrents."""
+    radarr = FakeArr([_stuck_record(rec_id=99, download_id="MOVIE")])
+    sonarr = FakeArr()
+    watcher, notes = _watcher(sonarr, radarr)
+    watcher._first_seen = {"radarr": {"MOVIE": NOW - timedelta(minutes=60)}}
+    watcher.run_once()
+    assert radarr.deleted == [(99, True, False)]
+    assert sonarr.deleted == []
+    assert len(notes) == 1
+
+
+def test_radarr_queue_is_fetched_without_episode_data():
+    _s, radarr = FakeArr(), FakeArr()
+    watcher, _ = _watcher(_s, radarr)
+    watcher.run_once()
+    assert radarr.include_episode is False
+
+
+# --- a group tripping both gates: which treatment wins ------------------------
+
+def test_both_gates_group_takes_the_preair_treatment():
+    """Asserting only the counts left the actual decision unpinned. Forcing a
+    re-search for an episode that does not exist yet can only surface another fake,
+    so pre-air's skipRedownload must win over gate A's re-search."""
+    record = _preair_record(158)
+    record["status"] = "completed"
+    record["statusMessages"] = [{"title": "t", "messages": [NO_FILES_MSG]}]
+    sonarr = FakeArr([record])
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=60)}}
+    watcher.run_once()
+    assert sonarr.deleted == [(1, True, True)]      # skip_redownload wins
+    assert "pre-air" in notes[0][0]                 # and so does the heading
+
+
+# --- gate A's match must not be loosened --------------------------------------
+
+def test_a_different_sonarr_message_does_not_match():
+    """Guards the whole NO_FILES_MSG string. The only previous negative used
+    'Something else entirely', which fails against any shortening of the constant --
+    so truncating it to 'No files found' passed the suite."""
+    record = _stuck_record()
+    record["statusMessages"] = [{
+        "title": "Silo S03E05",
+        "messages": ["No files found in /data/torrents/complete/Silo"],
+    }]
+    candidates, new_seen = find_stuck(group_by_download_id([record]), NOW, {}, 15)
+    assert candidates == []
+    assert new_seen == {}
+
+
+def test_message_match_is_case_sensitive():
+    record = _stuck_record()
+    record["statusMessages"] = [{"title": "x", "messages": [NO_FILES_MSG.upper()]}]
+    _c, new_seen = find_stuck(group_by_download_id([record]), NOW, {}, 15)
+    assert new_seen == {}
+
+
+# --- a failed delete is not a success -----------------------------------------
+
+def test_failed_delete_is_not_counted_as_acted():
+    class AllFail(FakeArr):
+        def delete_queue_item(self, queue_id, blocklist=True, skip_redownload=False):
+            raise RuntimeError("sonarr said no")
+
+    sonarr = AllFail([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr())
+    acted = watcher.run_once()
+    assert acted == []          # nothing was actually removed
+    assert notes == []          # and nothing claimed otherwise on the phone

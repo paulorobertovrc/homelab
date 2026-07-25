@@ -1470,6 +1470,20 @@ Expected: no errors. With a healthy queue there is nothing to act on, so silence
 startup line is the correct result. **Record what was actually observed in this plan file**
 — do not claim success without the output.
 
+**Actually observed (2026-07-25, ~11:53–12:04 local):** container `import-gate` rebuilt,
+restarted, and stayed `healthy` throughout. Startup line:
+
+```text
+2026-07-25 11:53:22,816 INFO __main__: queue-watch: started in DRY-RUN (no deletions) (every 10 min, min age 15 min, cap 3, pre-air on margin 24h)
+```
+
+Full `docker logs --since 12m` (not just the `queue-watch` grep) over the ~11-minute window
+showed exactly three lines total: the whisper-model HF lookup, the line above, and waitress's
+"Serving on" line — no `queue-watch: cycle failed`, no candidate/notification lines, no
+anomaly line. Silence past startup, as expected with a healthy queue. The margin-guard test
+(Step 3) and the kill-switch test (Step 4) were also run against this same build and both
+matched their expected output before this window started.
+
 - [ ] **Step 6: Arm it — only after observing**
 
 Leave it in dry-run long enough to see it decide on real traffic. It ships simulating so that
@@ -1493,6 +1507,13 @@ then `docker compose up -d import-gate` and confirm the startup line now reads `
 
 **Record in this file which criteria were met and what was observed.** If arming is deferred,
 say so here rather than leaving the step ambiguously unchecked.
+
+**Arming deferred by explicit instruction.** Criterion 1 (a full day of cycles) cannot be
+met within this implementation session; criteria 2 and 3 need real traffic over that same
+window. Only the ~11-minute window in Step 5 has been observed so far — healthy, no errors,
+nothing flagged, but that is far short of "a full day." `QUEUE_WATCH_DRY_RUN` stays at its
+default (`true`); arming is left for the user to do by hand once they've watched dry-run
+output over real traffic and the three criteria above are actually met.
 
 - [ ] **Step 7: Update the README**
 

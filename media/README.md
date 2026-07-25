@@ -255,9 +255,16 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
   nothing notifies, and the item sits in the queue forever until someone looks
   (that is exactly how the 2026-07-24 `Silo S03E05 .scr` case was found, days
   later). Note the guard only catches **executables** — a fake packaged as an
-  `.mkv` sails through it. Automating the cleanup, plus a second gate that kills
-  grabs of episodes that have not aired yet, is specced in
-  `docs/superpowers/specs/2026-07-25-queue-watch-design.md`. ⚠️ Global setting: a personal
+  `.mkv` sails through it. Both of those are now automated by **queue-watch** (a poller inside
+  `import-gate`, specced in
+  `docs/superpowers/specs/2026-07-25-queue-watch-design.md`): gate A removes
+  and blocklists queue items stuck on "no files eligible" after 15 min, and
+  gate B kills grabs of episodes airing more than 24h out. That margin is
+  measured, not guessed — legitimate WEB-DL shows up to ~2h before
+  `airDateUtc`, while the known fakes ran 116–158h early. Both gates notify
+  over ntfy with the source indexer, and both refuse to act at all when more
+  than 3 groups qualify in one cycle, since that pattern means a systemic
+  failure (full or unmounted disk) rather than bad releases. ⚠️ Global setting: a personal
   torrent that legitimately ships executables needs its files re-enabled by hand
   (torrent → Content tab). Lives in qBittorrent's config (not in git) — this
   note is its version-controlled record.

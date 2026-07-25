@@ -95,16 +95,26 @@ requests — not just "should work."
   tested OK both ways.
 - **Bazarr** (`:6767`): connected to Radarr (`172.39.0.4:7878`) and Sonarr
   (`172.39.0.3:8989`); SignalR live‑sync confirmed connected to both.
-- **Indexers** (public, no login) — added via Prowlarr, live search verified
-  (143 real results for a test query):
+- **Indexers** (public, no login) — added via Prowlarr, live search verified.
+  State as of 2026-07-25:
 
   | Indexer | Status |
   |---|---|
-  | YTS | ✅ added, working |
-  | The Pirate Bay | ✅ added, working |
-  | LimeTorrents | ✅ added, working |
-  | 1337x | ❌ **not added** — Prowlarr rejects it (HTTP 400), see below |
-  | EZTV | ❌ **not added** — Prowlarr rejects it (HTTP 400), see below |
+  | The Pirate Bay | ✅ working — 127 Sonarr grabs, **0** blocklists |
+  | Knaben | ✅ working — 53 grabs, 3 blocklists |
+  | 1337x | ✅ working — 22 grabs, 0 blocklists (Cloudflare cleared, see below) |
+  | EZTV | ✅ working (Cloudflare cleared, see below) |
+  | YTS | ✅ working (movies only) |
+  | TorrentProject2 | ⚠️ enabled but returns **HTTP 403** (Cloudflare) on every search |
+  | LimeTorrents | ❌ **disabled 2026-07-25** — malware repeat offender, see below |
+
+  **Why LimeTorrents is off:** 28 grabs / **5** blocklists (18%, worst by far) and the
+  only indexer that ever served executable malware — twice. 2026-07-15: two fake HotD
+  "episodes" as 1–1.5 GB `.exe`. 2026-07-24: `Silo S03E05 ... .scr` (1.32 GB) for an
+  episode that had not even aired (`airDate` 07-31), so the release was fake by
+  construction. Disabled in Prowlarr; verified it propagated to Sonarr with `rss=false`,
+  `auto=false` and `interactive=false` — all three grab paths closed. Radarr never
+  grabbed from it at all. Re-enable only with a good reason.
 
 ### FlareSolverr (Cloudflare bypass) — partial
 
@@ -116,11 +126,14 @@ wait for and receive that full response — but still classifies it as blocked. 
 means the returned page still carries Cloudflare markers Prowlarr's Cardigann parser
 rejects, i.e. these two sites currently have a protection layer FlareSolverr 3.5.0
 alone doesn't fully clear. This is a **known external limitation** (site hardening,
-not a stack misconfiguration) — not something to keep patching blindly. Prowlarr
-rejects the add at save time (HTTP 400), so **1337x/EZTV are not present** in the
-indexer list at all right now — only YTS/The Pirate Bay/LimeTorrents are. FlareSolverr
-itself is left running (Settings → Indexer Proxies) in case a future site/FlareSolverr
-update fixes it — retry adding 1337x/EZTV from Prowlarr's UI (Indexers → Add) then.
+not a stack misconfiguration) — not something to keep patching blindly.
+
+**Resolved since:** 1337x and EZTV are both added and working today (EZTV returned 199
+live results on 2026-07-25, 1337x has 22 grabs with 0 blocklists). The decisive change
+was putting FlareSolverr inside gluetun's netns (see the tunnel table above): sharing
+Prowlarr's egress IP makes Cloudflare's `cf_clearance` cookie valid for the requests
+Prowlarr actually makes. `TorrentProject2` still fails the same way (HTTP 403 on every
+search) and is the one remaining case.
 
 ### Import-gate — post-import audio-language + integrity gate
 
@@ -238,7 +251,11 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
   download) plus `*.rar` / `*.r[0-9]*` (TRaSH's own recommendation — no
   unpackerr in this stack, RARed releases can't import anyway). A torrent whose
   files are **all** excluded completes instantly at 0 bytes and the *arr shows
-  "no files eligible" — blocklist it and move on. ⚠️ Global setting: a personal
+  "no files eligible" — blocklist it and move on. **The guard fires silently:**
+  nothing notifies, and the item sits in the queue forever until someone looks
+  (that is exactly how the 2026-07-24 `Silo S03E05 .scr` case was found, days
+  later). Automating that cleanup is specced in
+  `docs/superpowers/specs/2026-07-25-queue-watch-design.md`. ⚠️ Global setting: a personal
   torrent that legitimately ships executables needs its files re-enabled by hand
   (torrent → Content tab). Lives in qBittorrent's config (not in git) — this
   note is its version-controlled record.

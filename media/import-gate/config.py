@@ -3,6 +3,10 @@ import os
 from dataclasses import dataclass
 
 
+def _env_bool(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class Settings:
     radarr_url: str
@@ -19,9 +23,24 @@ class Settings:
     sample_windows: int
     sample_seconds: int
     skip_intro_fraction: float
+    queue_watch_enabled: bool
+    queue_watch_interval_min: int
+    queue_watch_min_age_min: int
+    queue_watch_max_per_cycle: int
+    queue_watch_preair_enabled: bool
+    queue_watch_preair_margin_h: int
+    queue_watch_dry_run: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
+        preair_margin = int(os.environ.get("QUEUE_WATCH_PREAIR_MARGIN_H", "24"))
+        if preair_margin < 1:
+            raise ValueError(
+                f"QUEUE_WATCH_PREAIR_MARGIN_H must be >= 1 (got {preair_margin}). "
+                "To turn the pre-air gate off use QUEUE_WATCH_PREAIR_ENABLED=false; "
+                "a zero margin would blocklist legitimate releases, which routinely "
+                "appear a couple of hours before airDateUtc."
+            )
         return cls(
             radarr_url=os.environ.get("RADARR_URL", "http://172.39.0.4:7878"),
             radarr_key=os.environ["RADARR_API_KEY"],
@@ -37,4 +56,12 @@ class Settings:
             sample_windows=int(os.environ.get("SAMPLE_WINDOWS", "3")),
             sample_seconds=int(os.environ.get("SAMPLE_SECONDS", "30")),
             skip_intro_fraction=float(os.environ.get("SKIP_INTRO_FRACTION", "0.1")),
+            queue_watch_enabled=_env_bool("QUEUE_WATCH_ENABLED", "true"),
+            queue_watch_interval_min=int(os.environ.get("QUEUE_WATCH_INTERVAL_MIN", "10")),
+            queue_watch_min_age_min=int(os.environ.get("QUEUE_WATCH_MIN_AGE_MIN", "15")),
+            queue_watch_max_per_cycle=int(os.environ.get("QUEUE_WATCH_MAX_PER_CYCLE", "3")),
+            queue_watch_preair_enabled=_env_bool("QUEUE_WATCH_PREAIR_ENABLED", "true"),
+            queue_watch_preair_margin_h=preair_margin,
+            # Ships simulating. Arming is a deliberate act, not a side effect of deploying.
+            queue_watch_dry_run=_env_bool("QUEUE_WATCH_DRY_RUN", "true"),
         )

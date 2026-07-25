@@ -161,3 +161,25 @@ def test_get_queue_refuses_to_return_a_partial_view():
     s = PagingSession(pages, total=10_000)
     with pytest.raises(RuntimeError, match="partial view"):
         _client(s).get_queue()
+
+
+def test_get_queue_pins_a_total_ordering():
+    """Offset paging is only sound over a stable sort. Without an explicit key the
+    client inherits whatever the server defaults to, over a collection whose natural
+    keys (timeleft, progress) change between the two requests -- so a record can shift
+    across the boundary and be skipped, which is exactly the partial view the
+    pre-air gate's all() must never see."""
+    s = FakeSession()
+    s.responses[("GET", "http://radarr:7878/api/v3/queue")] = FakeResp(200, {"records": []})
+    _client(s).get_queue()
+    params = s.calls[0][2]["params"]
+    assert params["sortKey"] == "id"
+    assert params["sortDirection"] == "ascending"
+
+
+def test_get_queue_drops_records_repeated_across_pages():
+    """A concurrent insert shifts everything down a slot, so the same record can be
+    served on two pages. Counting duplicates toward totalRecords would also stop the
+    loop early, hiding the tail of the queue."""
+    s = PagingSession([[{"id": 1}, {"id": 2}], [{"id": 2}, {"id": 3}]], total=3)
+    assert [r["id"] for r in _client(s).get_queue()] == [1, 2, 3]

@@ -55,15 +55,31 @@ class ArrClient:
         big season is queued, so it pages.
         """
         records = []
+        seen_ids = set()
         for page in range(1, self.QUEUE_MAX_PAGES + 1):
-            params = {"page": page, "pageSize": self.QUEUE_PAGE_SIZE}
+            params = {
+                "page": page,
+                "pageSize": self.QUEUE_PAGE_SIZE,
+                # Offset paging is only sound over a stable total ordering. Left to the
+                # server's default the sort is over keys like timeleft/progress, which
+                # change between the two requests -- a record can then shift across the
+                # boundary and be skipped, handing the pre-air gate the partial group
+                # this pagination exists to prevent. `id` is immutable, so it cannot.
+                "sortKey": "id",
+                "sortDirection": "ascending",
+            }
             if include_episode:
                 # Sonarr only: brings EpisodeResource (with airDateUtc) inline,
                 # which the pre-air gate needs.
                 params["includeEpisode"] = "true"
             payload = self._req("GET", "/api/v3/queue", params=params).json()
             batch = payload.get("records", [])
-            records += batch
+            # A concurrent insert can still serve the same record on two pages. Counting
+            # the duplicate toward totalRecords would stop the loop early and hide the
+            # tail of the queue, so dedupe before the comparison.
+            fresh = [r for r in batch if r.get("id") not in seen_ids]
+            seen_ids.update(r.get("id") for r in fresh)
+            records += fresh
             # `not batch` also guards against a server reporting a total it never serves.
             if not batch or len(records) >= payload.get("totalRecords", len(records)):
                 return records

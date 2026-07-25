@@ -34,9 +34,9 @@ container unhealthy nor touches import validation.
 |---|---|
 | `import-gate/queue_watch.py` (new) | Pure gate logic + `QueueWatcher` + `run_forever` |
 | `import-gate/arr_client.py` (modify) | Two new API methods: `get_queue`, `delete_queue_item` |
-| `import-gate/config.py` (modify) | Six new settings + margin validation |
+| `import-gate/config.py` (modify) | Seven new settings + margin validation |
 | `import-gate/app.py` (modify) | Start the daemon thread in `__main__` |
-| `compose.yaml` (modify) | Six env vars on the `import-gate` service |
+| `compose.yaml` (modify) | Seven env vars on the `import-gate` service |
 | `import-gate/tests/test_queue_watch.py` (new) | Gate logic + cycle tests |
 | `import-gate/tests/test_arr_client.py` (modify) | Tests for the two new methods |
 | `import-gate/tests/test_config.py` (new) | Settings defaults + margin validation |
@@ -249,6 +249,7 @@ QUEUE_KEYS = (
     "QUEUE_WATCH_MAX_PER_CYCLE",
     "QUEUE_WATCH_PREAIR_ENABLED",
     "QUEUE_WATCH_PREAIR_MARGIN_H",
+    "QUEUE_WATCH_DRY_RUN",
 )
 
 
@@ -268,16 +269,19 @@ def test_queue_watch_defaults(monkeypatch):
     assert s.queue_watch_max_per_cycle == 3
     assert s.queue_watch_preair_enabled is True
     assert s.queue_watch_preair_margin_h == 24
+    assert s.queue_watch_dry_run is True     # ships simulating, armed by hand
 
 
 def test_queue_watch_reads_overrides(monkeypatch):
     _env(monkeypatch, QUEUE_WATCH_ENABLED="false", QUEUE_WATCH_INTERVAL_MIN="5",
-         QUEUE_WATCH_PREAIR_ENABLED="false", QUEUE_WATCH_PREAIR_MARGIN_H="48")
+         QUEUE_WATCH_PREAIR_ENABLED="false", QUEUE_WATCH_PREAIR_MARGIN_H="48",
+         QUEUE_WATCH_DRY_RUN="false")
     s = Settings.from_env()
     assert s.queue_watch_enabled is False
     assert s.queue_watch_interval_min == 5
     assert s.queue_watch_preair_enabled is False
     assert s.queue_watch_preair_margin_h == 48
+    assert s.queue_watch_dry_run is False
 
 
 @pytest.mark.parametrize("value", ["0", "-1"])
@@ -312,6 +316,7 @@ Add the six fields at the end of the `Settings` field list (after `skip_intro_fr
     queue_watch_max_per_cycle: int
     queue_watch_preair_enabled: bool
     queue_watch_preair_margin_h: int
+    queue_watch_dry_run: bool
 ```
 
 In `from_env`, immediately before the `return cls(` line:
@@ -336,6 +341,8 @@ And add to the `cls(...)` call, after `skip_intro_fraction=...`:
             queue_watch_max_per_cycle=int(os.environ.get("QUEUE_WATCH_MAX_PER_CYCLE", "3")),
             queue_watch_preair_enabled=_env_bool("QUEUE_WATCH_PREAIR_ENABLED", "true"),
             queue_watch_preair_margin_h=preair_margin,
+            # Ships simulating. Arming is a deliberate act, not a side effect of deploying.
+            queue_watch_dry_run=_env_bool("QUEUE_WATCH_DRY_RUN", "true"),
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -880,6 +887,11 @@ class FakeSettings:
     queue_watch_max_per_cycle = 3
     queue_watch_preair_enabled = True
     queue_watch_preair_margin_h = 24
+    queue_watch_dry_run = False        # the armed behaviour is what most tests assert
+
+
+class DryRun(FakeSettings):
+    queue_watch_dry_run = True
 
 
 def _watcher(sonarr, radarr, settings=None, notes=None):
@@ -1021,6 +1033,46 @@ def test_delete_failure_does_not_abort_remaining_candidates():
     watcher, _ = _watcher(sonarr, FakeArr())
     watcher.run_once()
     assert sonarr.deleted == [(2, True, True)]
+
+
+def test_dry_run_notifies_but_deletes_nothing():
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr(), settings=DryRun())
+    watcher.run_once()
+    assert sonarr.deleted == []
+    assert len(notes) == 1
+    assert "[SIMULAÇÃO]" in notes[0][0]
+    assert "NADA foi removido" in notes[0][2]
+
+
+def test_dry_run_does_not_re_notify_the_same_item():
+    """The item stays queued, so it is a candidate every cycle. Without dedup this would
+    fire every 10 minutes and the mode would be unusable."""
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr(), settings=DryRun())
+    watcher.run_once()
+    watcher.run_once()
+    watcher.run_once()
+    assert len(notes) == 1
+
+
+def test_dry_run_reports_again_after_the_item_leaves_and_returns():
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr(), settings=DryRun())
+    watcher.run_once()
+    sonarr.records = []
+    watcher.run_once()
+    sonarr.records = [_preair_record(158)]
+    watcher.run_once()
+    assert len(notes) == 2
+
+
+def test_dry_run_still_respects_the_cap():
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in range(1, 6)]
+    watcher, notes = _watcher(FakeArr(records), FakeArr(), settings=DryRun())
+    watcher.run_once()
+    assert len(notes) == 1
+    assert "anomalia" in notes[0][0]
 ```
 
 Add `import pytest` to the top of the test file.
@@ -1056,6 +1108,7 @@ class QueueWatcher:
         self._now = now_fn or (lambda: datetime.now(timezone.utc))
         self._first_seen = {"sonarr": {}, "radarr": {}}
         self._anomaly_notified = False
+        self._dry_run_notified = set()
 
     def run_once(self) -> list:
         now = self._now()
@@ -1088,6 +1141,10 @@ class QueueWatcher:
 
         candidates = _merge_by_group(candidates)
 
+        # Forget dry-run reports for groups that left the queue, so an item that comes back
+        # is reported again rather than staying silent forever.
+        self._dry_run_notified &= {(c["kind"], c["download_id"]) for c in candidates}
+
         cap = settings.queue_watch_max_per_cycle
         if len(candidates) > cap:
             logger.error("queue-watch: %d candidates exceed cap %d; taking no action",
@@ -1118,6 +1175,32 @@ class QueueWatcher:
         title = records[0].get("title", "?")
         indexer = records[0].get("indexer") or "?"
         is_preair = "preair" in candidate["gates"]
+        gates = "+".join(candidate["gates"])
+
+        if is_preair:
+            reason = (f"episódio ainda não exibido "
+                      f"({candidate.get('hours_early')}h de antecedência)")
+            heading = "🚫 queue-watch: grab pre-air"
+        else:
+            reason = "nenhum arquivo elegível para import (payload barrado)"
+            heading = "🧹 queue-watch: fila destravada"
+        summary = f"{title}\nIndexer: {indexer}\nMotivo: {reason}"
+
+        if self._settings.queue_watch_dry_run:
+            # Dry-run leaves the item in the queue, so it stays a candidate every cycle.
+            # Without this dedup the same item would notify every 10 minutes and the mode
+            # would be unusable.
+            key = (candidate["kind"], candidate["download_id"])
+            if key in self._dry_run_notified:
+                return False
+            self._dry_run_notified.add(key)
+            logger.warning("queue-watch [DRY-RUN]: would remove %s (%s) via %s",
+                           title, indexer, gates)
+            self._notify(self._settings.ntfy_url, f"[SIMULAÇÃO] {heading}", "eyes", 3,
+                         f"{summary}\n\nNADA foi removido — "
+                         f"QUEUE_WATCH_DRY_RUN=true.")
+            return True
+
         try:
             # Pre-air skips the forced re-search: the episode does not exist yet, so an
             # immediate search can only surface another fake and feed the loop. Let the
@@ -1127,17 +1210,9 @@ class QueueWatcher:
             logger.error("queue-watch: could not remove %s: %s", title, e)
             return False
 
-        if is_preair:
-            reason = (f"episódio ainda não exibido "
-                      f"({candidate.get('hours_early')}h de antecedência)")
-            heading = "🚫 queue-watch: grab pre-air"
-        else:
-            reason = "nenhum arquivo elegível para import (payload barrado)"
-            heading = "🧹 queue-watch: fila destravada"
-        message = f"{title}\nIndexer: {indexer}\nMotivo: {reason}\nRemovido + blocklist."
-        logger.warning("queue-watch: removed %s (%s) via %s",
-                       title, indexer, "+".join(candidate["gates"]))
-        self._notify(self._settings.ntfy_url, heading, "lock", 4, message)
+        logger.warning("queue-watch: removed %s (%s) via %s", title, indexer, gates)
+        self._notify(self._settings.ntfy_url, heading, "lock", 4,
+                     f"{summary}\nRemovido + blocklist.")
         return True
 
 
@@ -1158,7 +1233,7 @@ def _merge_by_group(candidates: list) -> list:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: PASS (34 tests)
+Expected: PASS (38 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1248,7 +1323,7 @@ def run_forever(watcher, interval_min: int, sleep_fn=time.sleep) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: PASS (36 tests)
+Expected: PASS (40 tests)
 
 - [ ] **Step 5: Wire it into app.py**
 
@@ -1291,8 +1366,9 @@ Replace the `application = create_app(...)` block in `__main__` with:
             daemon=True,
             name="queue-watch",
         ).start()
-        logger.info("queue-watch: started (every %d min, min age %d min, cap %d, "
+        logger.info("queue-watch: started in %s (every %d min, min age %d min, cap %d, "
                     "pre-air %s margin %dh)",
+                    "DRY-RUN (no deletions)" if s.queue_watch_dry_run else "ARMED",
                     s.queue_watch_interval_min, s.queue_watch_min_age_min,
                     s.queue_watch_max_per_cycle,
                     "on" if s.queue_watch_preair_enabled else "off",
@@ -1313,6 +1389,8 @@ In `compose.yaml`, in the `import-gate` service's `environment:` list, after the
       - QUEUE_WATCH_MAX_PER_CYCLE=${QUEUE_WATCH_MAX_PER_CYCLE:-3}
       - QUEUE_WATCH_PREAIR_ENABLED=${QUEUE_WATCH_PREAIR_ENABLED:-true}
       - QUEUE_WATCH_PREAIR_MARGIN_H=${QUEUE_WATCH_PREAIR_MARGIN_H:-24}
+      # Ships simulating. Set QUEUE_WATCH_DRY_RUN=false in .env to arm it.
+      - QUEUE_WATCH_DRY_RUN=${QUEUE_WATCH_DRY_RUN:-true}
 ```
 
 - [ ] **Step 7: Verify compose parses and the suite is green**
@@ -1355,7 +1433,8 @@ docker compose up -d --build import-gate
 docker logs import-gate --since 2m 2>&1 | grep -i "queue-watch"
 docker inspect --format '{{.State.Health.Status}}' import-gate
 ```
-Expected: a `queue-watch: started (every 10 min, ...)` line, and `healthy`.
+Expected: `queue-watch: started in DRY-RUN (no deletions) (every 10 min, ...)`, and `healthy`.
+**It must say DRY-RUN** — that is the shipped default, and arming is Step 7.
 
 - [ ] **Step 3: Prove the margin guard fails loudly**
 
@@ -1391,7 +1470,31 @@ Expected: no errors. With a healthy queue there is nothing to act on, so silence
 startup line is the correct result. **Record what was actually observed in this plan file**
 — do not claim success without the output.
 
-- [ ] **Step 6: Update the README**
+- [ ] **Step 6: Arm it — only after observing**
+
+Leave it in dry-run long enough to see it decide on real traffic. It ships simulating so that
+deploying is never the same act as arming.
+
+**Arming criteria — all three:**
+
+1. At least one full day of cycles with no `queue-watch: cycle failed` in the logs.
+2. Either a `[SIMULAÇÃO]` notification whose verdict you agree with, or a clean run with
+   nothing flagged. A flagged item you would NOT have removed means stop and re-tune, not arm.
+3. `docker logs import-gate 2>&1 | grep -c "DRY-RUN"` reflects what you actually saw on the
+   phone — no silent decisions.
+
+To arm, add to `media/.env`:
+
+```bash
+QUEUE_WATCH_DRY_RUN=false
+```
+
+then `docker compose up -d import-gate` and confirm the startup line now reads `ARMED`.
+
+**Record in this file which criteria were met and what was observed.** If arming is deferred,
+say so here rather than leaving the step ambiguously unchecked.
+
+- [ ] **Step 7: Update the README**
 
 In `README.md`, in the fake-release guard bullet, replace this sentence:
 
@@ -1416,7 +1519,7 @@ with:
   failure (full or unmounted disk) rather than bad releases.
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-07-25-queue-watch.md

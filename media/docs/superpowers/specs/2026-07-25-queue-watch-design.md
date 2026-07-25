@@ -190,6 +190,22 @@ estiver fora do ar, o ciclo inteiro é abortado com log, sem agir com visão par
 
 **Kill switch** (`QUEUE_WATCH_ENABLED`, default `true`). Desliga o poller sem rebuild.
 
+**Dry-run** (`QUEUE_WATCH_DRY_RUN`, default **`true`**). O watcher nasce simulando: decide,
+loga e notifica exatamente o que faria, sem apagar nada. Armar é ato deliberado
+(`QUEUE_WATCH_DRY_RUN=false` no `.env`), nunca efeito colateral de um deploy — a primeira
+execução de uma automação destrutiva não deveria ser a primeira vez que alguém vê o que ela
+decide.
+
+O risco do dry-run é o inverso: virar falsa sensação de segurança se alguém esquecer que está
+simulando. Mitigado com rótulo em todo lugar — a linha de startup diz `DRY-RUN (no deletions)`
+ou `ARMED`, e cada notificação vai prefixada com `[SIMULAÇÃO]` e o aviso de que nada foi
+removido.
+
+Em simulação o item **permanece na fila**, logo continua candidato em todo ciclo. Sem
+deduplicação, o mesmo item notificaria de 10 em 10 minutos e o modo seria inutilizável — então
+cada grupo é reportado uma vez, e a marca é esquecida quando o grupo sai da fila (item que
+volta é reportado de novo).
+
 ### Ação
 
 Por grupo candidato, dentro do teto — **um único** `DELETE`, no menor `id` do grupo:
@@ -259,7 +275,7 @@ propriedade geral do objeto. Um segundo par de clientes custa nada e elimina a d
 
 ### Configuração (compose)
 
-Seis variáveis novas no serviço `import-gate`, todas com default embutido em `Settings`:
+Sete variáveis novas no serviço `import-gate`, todas com default embutido em `Settings`:
 
 ```yaml
 - QUEUE_WATCH_ENABLED=${QUEUE_WATCH_ENABLED:-true}
@@ -268,6 +284,7 @@ Seis variáveis novas no serviço `import-gate`, todas com default embutido em `
 - QUEUE_WATCH_MAX_PER_CYCLE=${QUEUE_WATCH_MAX_PER_CYCLE:-3}
 - QUEUE_WATCH_PREAIR_ENABLED=${QUEUE_WATCH_PREAIR_ENABLED:-true}
 - QUEUE_WATCH_PREAIR_MARGIN_H=${QUEUE_WATCH_PREAIR_MARGIN_H:-24}
+- QUEUE_WATCH_DRY_RUN=${QUEUE_WATCH_DRY_RUN:-true}
 ```
 
 O portão B tem flag **própria** (`QUEUE_WATCH_PREAIR_ENABLED`) em vez de ser desligado com
@@ -299,6 +316,7 @@ em vez de silenciosamente ativar o modo que blocklista releases boas.
 | Restart do container | Relógio zera; itens do portão A esperam mais 15 min |
 | `QUEUE_WATCH_PREAIR_MARGIN_H` < 1 | Container **não sobe** (erro explícito em `from_env`) |
 | `QUEUE_WATCH_PREAIR_ENABLED=false` | Só o portão A opera |
+| `QUEUE_WATCH_DRY_RUN=true` (default) | Decide e notifica com `[SIMULAÇÃO]`, remove nada; cada grupo reportado uma vez |
 | `QUEUE_WATCH_ENABLED=false` | Thread não sobe |
 
 ## Testes (TDD, antes do código)

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from queue_watch import (NO_FILES_MSG, QueueWatcher, find_preair, find_stuck,
-                          group_by_download_id)
+                          group_by_download_id, run_forever)
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
 
@@ -401,3 +401,37 @@ def test_dry_run_still_respects_the_cap():
     watcher.run_once()
     assert len(notes) == 1
     assert "anomalia" in notes[0][0]
+
+
+def test_run_forever_survives_a_failing_cycle():
+    """A cycle that raises must not kill the thread."""
+    calls = []
+
+    class Boom:
+        def run_once(self):
+            calls.append(1)
+            raise RuntimeError("sonarr down")
+
+    def sleep_fn(_seconds):
+        if len(calls) >= 3:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(Boom(), 10, sleep_fn=sleep_fn)
+    assert len(calls) == 3
+
+
+def test_run_forever_sleeps_the_configured_interval():
+    slept = []
+
+    class Once:
+        def run_once(self):
+            return []
+
+    def sleep_fn(seconds):
+        slept.append(seconds)
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(Once(), 10, sleep_fn=sleep_fn)
+    assert slept == [600]

@@ -9,6 +9,7 @@ is fake by construction, and this catches the ones packaged as .mkv, which the e
 guard cannot see.
 """
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
@@ -258,3 +259,13 @@ def _merge_by_group(candidates: list) -> list:
         else:
             merged[key] = candidate
     return list(merged.values())
+
+
+def run_forever(watcher, interval_min: int, sleep_fn=time.sleep) -> None:
+    """Poll loop. Any cycle failure is logged and swallowed so the thread survives."""
+    while True:
+        try:
+            watcher.run_once()
+        except Exception as e:
+            logger.error("queue-watch: cycle failed: %s", e)
+        sleep_fn(interval_min * 60)

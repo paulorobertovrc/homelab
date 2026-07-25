@@ -362,6 +362,14 @@ services:
       - SONARR_API_KEY=${SONARR_API_KEY:?Set SONARR_API_KEY in media/.env}
       - NTFY_URL=http://${SET_IP_NTFY:-172.39.0.10}:80/arr-media
       - HF_HOME=/config/hf-cache
+      - QUEUE_WATCH_ENABLED=${QUEUE_WATCH_ENABLED:-true}
+      - QUEUE_WATCH_INTERVAL_MIN=${QUEUE_WATCH_INTERVAL_MIN:-10}
+      - QUEUE_WATCH_MIN_AGE_MIN=${QUEUE_WATCH_MIN_AGE_MIN:-15}
+      - QUEUE_WATCH_MAX_PER_CYCLE=${QUEUE_WATCH_MAX_PER_CYCLE:-3}
+      - QUEUE_WATCH_PREAIR_ENABLED=${QUEUE_WATCH_PREAIR_ENABLED:-true}
+      - QUEUE_WATCH_PREAIR_MARGIN_H=${QUEUE_WATCH_PREAIR_MARGIN_H:-24}
+      # Ships simulating. Set QUEUE_WATCH_DRY_RUN=false in .env to arm it.
+      - QUEUE_WATCH_DRY_RUN=${QUEUE_WATCH_DRY_RUN:-true}
     volumes:
       - ${LIBRARY:-/mnt/f/Media}:/data/media:ro
       - /mnt/d/quarantine/arr_server:/data/quarantine

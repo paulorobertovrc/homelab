@@ -254,7 +254,9 @@ File names are never touched (`renameEpisodes`/`renameMovies` stay off) — only
   "no files eligible" — blocklist it and move on. **The guard fires silently:**
   nothing notifies, and the item sits in the queue forever until someone looks
   (that is exactly how the 2026-07-24 `Silo S03E05 .scr` case was found, days
-  later). Automating that cleanup is specced in
+  later). Note the guard only catches **executables** — a fake packaged as an
+  `.mkv` sails through it. Automating the cleanup, plus a second gate that kills
+  grabs of episodes that have not aired yet, is specced in
   `docs/superpowers/specs/2026-07-25-queue-watch-design.md`. ⚠️ Global setting: a personal
   torrent that legitimately ships executables needs its files re-enabled by hand
   (torrent → Content tab). Lives in qBittorrent's config (not in git) — this

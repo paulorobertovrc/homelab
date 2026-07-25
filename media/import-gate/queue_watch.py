@@ -9,7 +9,7 @@ is fake by construction, and this catches the ones packaged as .mkv, which the e
 guard cannot see.
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -121,3 +121,140 @@ def find_preair(groups: dict, now, margin_h: int):
                 "hours_early": round((earliest - now).total_seconds() / 3600, 1),
             })
     return candidates
+
+
+class QueueWatcher:
+    """Runs both gates over the Sonarr and Radarr queues.
+
+    State lives in memory on purpose: a container restart zeroes the clock and makes the
+    watcher wait out the minimum age again, which is the safe direction to fail.
+    """
+
+    def __init__(self, settings, sonarr, radarr, notify_fn, now_fn=None):
+        self._settings = settings
+        self._sonarr = sonarr
+        self._radarr = radarr
+        self._notify = notify_fn
+        self._now = now_fn or (lambda: datetime.now(timezone.utc))
+        self._first_seen = {"sonarr": {}, "radarr": {}}
+        self._anomaly_notified = False
+        self._dry_run_notified = set()
+
+    def run_once(self) -> list:
+        now = self._now()
+        settings = self._settings
+
+        # Both queues are collected before anything is evaluated. A systemic failure hits
+        # both apps at once, so acting on a partial view is exactly what the cap exists to
+        # prevent; if either call raises, the whole cycle aborts having done nothing.
+        queues = [
+            ("sonarr", self._sonarr, self._sonarr.get_queue(include_episode=True)),
+            ("radarr", self._radarr, self._radarr.get_queue()),
+        ]
+
+        candidates = []
+        new_first_seen = {}
+        for kind, client, records in queues:
+            groups = group_by_download_id(records)
+            stuck, seen = find_stuck(groups, now, self._first_seen.get(kind, {}),
+                                     settings.queue_watch_min_age_min)
+            new_first_seen[kind] = seen
+            found = list(stuck)
+            # Gate B is Sonarr-only: Radarr's native Minimum Availability covers movies.
+            if kind == "sonarr" and settings.queue_watch_preair_enabled:
+                found += find_preair(groups, now, settings.queue_watch_preair_margin_h)
+            for candidate in found:
+                candidate["kind"] = kind
+                candidate["client"] = client
+            candidates += found
+        self._first_seen = new_first_seen
+
+        candidates = _merge_by_group(candidates)
+
+        # Forget dry-run reports for groups that left the queue, so an item that comes back
+        # is reported again rather than staying silent forever.
+        self._dry_run_notified &= {(c["kind"], c["download_id"]) for c in candidates}
+
+        cap = settings.queue_watch_max_per_cycle
+        if len(candidates) > cap:
+            logger.error("queue-watch: %d candidates exceed cap %d; taking no action",
+                         len(candidates), cap)
+            if not self._anomaly_notified:
+                self._notify(
+                    settings.ntfy_url, "⚠️ queue-watch: anomalia em massa", "no_entry", 5,
+                    f"{len(candidates)} itens da fila viraram candidatos a remoção num "
+                    f"único ciclo (teto {cap}). Nenhuma ação tomada — isso costuma ser "
+                    f"falha sistêmica (disco cheio ou desmontado). Verifique à mão.",
+                )
+                self._anomaly_notified = True
+            return []
+        self._anomaly_notified = False
+
+        acted = []
+        for candidate in candidates:
+            if self._act(candidate):
+                acted.append(candidate)
+        return acted
+
+    def _act(self, candidate) -> bool:
+        records = candidate["records"]
+        # removeFromClient drops the whole torrent, so the sibling records of a season
+        # pack vanish with it -- one DELETE per group, not per record.
+        # group_by_download_id guarantees every record here has an "id".
+        queue_id = min(r["id"] for r in records)
+        title = records[0].get("title", "?")
+        indexer = records[0].get("indexer") or "?"
+        is_preair = "preair" in candidate["gates"]
+        gates = "+".join(candidate["gates"])
+
+        if is_preair:
+            reason = (f"episódio ainda não exibido "
+                      f"({candidate.get('hours_early')}h de antecedência)")
+            heading = "🚫 queue-watch: grab pre-air"
+        else:
+            reason = "nenhum arquivo elegível para import (payload barrado)"
+            heading = "🧹 queue-watch: fila destravada"
+        summary = f"{title}\nIndexer: {indexer}\nMotivo: {reason}"
+
+        if self._settings.queue_watch_dry_run:
+            # Dry-run leaves the item in the queue, so it stays a candidate every cycle.
+            # Without this dedup the same item would notify every 10 minutes and the mode
+            # would be unusable.
+            key = (candidate["kind"], candidate["download_id"])
+            if key in self._dry_run_notified:
+                return False
+            self._dry_run_notified.add(key)
+            logger.warning("queue-watch [DRY-RUN]: would remove %s (%s) via %s",
+                           title, indexer, gates)
+            self._notify(self._settings.ntfy_url, f"[SIMULAÇÃO] {heading}", "eyes", 3,
+                         f"{summary}\n\nNADA foi removido — "
+                         f"QUEUE_WATCH_DRY_RUN=true.")
+            return True
+
+        try:
+            # Pre-air skips the forced re-search: the episode does not exist yet, so an
+            # immediate search can only surface another fake and feed the loop. Let the
+            # scheduled RSS pick it up naturally once it has actually aired.
+            candidate["client"].delete_queue_item(queue_id, skip_redownload=is_preair)
+        except Exception as e:
+            logger.error("queue-watch: could not remove %s: %s", title, e)
+            return False
+
+        logger.warning("queue-watch: removed %s (%s) via %s", title, indexer, gates)
+        self._notify(self._settings.ntfy_url, heading, "lock", 4,
+                     f"{summary}\nRemovido + blocklist.")
+        return True
+
+
+def _merge_by_group(candidates: list) -> list:
+    """One group tripping both gates is one action and counts once against the cap."""
+    merged = {}
+    for candidate in candidates:
+        key = (candidate["kind"], candidate["download_id"])
+        if key in merged:
+            merged[key]["gates"] += candidate["gates"]
+            if "hours_early" in candidate:
+                merged[key].setdefault("hours_early", candidate["hours_early"])
+        else:
+            merged[key] = candidate
+    return list(merged.values())

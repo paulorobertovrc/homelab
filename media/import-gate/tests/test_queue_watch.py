@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
-from queue_watch import NO_FILES_MSG, find_preair, find_stuck, group_by_download_id
+import pytest
+
+from queue_watch import (NO_FILES_MSG, QueueWatcher, find_preair, find_stuck,
+                          group_by_download_id)
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
 
@@ -187,3 +190,214 @@ def test_date_only_air_date_is_spared_not_crashed():
     record = _preair_record(158)
     record["episode"]["airDateUtc"] = "2026-07-31"
     assert find_preair(group_by_download_id([record]), NOW, 24) == []
+
+
+class FakeArr:
+    def __init__(self, records=None, fail=False):
+        self.records = records or []
+        self.fail = fail
+        self.deleted = []
+        self.include_episode = None
+
+    def get_queue(self, include_episode=False):
+        if self.fail:
+            raise RuntimeError("connection refused")
+        self.include_episode = include_episode
+        return self.records
+
+    def delete_queue_item(self, queue_id, blocklist=True, skip_redownload=False):
+        self.deleted.append((queue_id, blocklist, skip_redownload))
+
+
+class FakeSettings:
+    ntfy_url = "http://ntfy/arr-media"
+    queue_watch_min_age_min = 15
+    queue_watch_max_per_cycle = 3
+    queue_watch_preair_enabled = True
+    queue_watch_preair_margin_h = 24
+    queue_watch_dry_run = False        # the armed behaviour is what most tests assert
+
+
+class DryRun(FakeSettings):
+    queue_watch_dry_run = True
+
+
+def _watcher(sonarr, radarr, settings=None, notes=None):
+    settings = settings or FakeSettings()
+    notes = notes if notes is not None else []
+
+    def notify(url, title, tags, priority, message):
+        notes.append((title, priority, message))
+
+    return QueueWatcher(settings, sonarr, radarr, notify, now_fn=lambda: NOW), notes
+
+
+def test_mature_stuck_group_is_removed_and_notified():
+    sonarr = FakeArr([_stuck_record()])
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher.run_once()                     # first sighting only
+    assert sonarr.deleted == []
+    watcher._now = lambda: NOW + timedelta(minutes=20)
+    acted = watcher.run_once()
+    assert sonarr.deleted == [(1, True, False)]     # gate A wants the re-search
+    assert len(acted) == 1
+    assert len(notes) == 1
+    assert "LimeTorrents" in notes[0][2]
+
+
+def test_preair_group_is_removed_on_the_first_cycle():
+    """No minimum-age wait: the signal is a date, and acting early saves the bandwidth."""
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    assert sonarr.deleted == [(1, True, True)]
+    assert "158" in notes[0][2]
+
+
+def test_preair_skips_redownload_but_gate_a_does_not():
+    """Forcing an immediate re-search for an episode that does not exist yet can only
+    turn up another fake, feeding the loop. Gate A's re-search, by contrast, is the point:
+    a real release for that episode probably exists."""
+    preair = FakeArr([_preair_record(158)])
+    watcher, _ = _watcher(preair, FakeArr())
+    watcher.run_once()
+    assert preair.deleted[0][2] is True
+
+    stuck = FakeArr([_stuck_record()])
+    watcher, _ = _watcher(stuck, FakeArr())
+    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=30)}}
+    watcher.run_once()
+    assert stuck.deleted[0][2] is False
+
+
+def test_sonarr_queue_is_fetched_with_episode_data():
+    sonarr = FakeArr()
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    assert sonarr.include_episode is True
+
+
+def test_preair_gate_is_not_applied_to_radarr():
+    """Radarr has native Minimum Availability; the gate is Sonarr-only."""
+    radarr = FakeArr([_preair_record(158)])
+    watcher, _ = _watcher(FakeArr(), radarr)
+    watcher.run_once()
+    assert radarr.deleted == []
+
+
+def test_pack_of_many_records_gets_exactly_one_delete():
+    records = [_preair_record(158, rec_id=n, download_id="PACK") for n in (7, 3, 9)]
+    sonarr = FakeArr(records)
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    assert sonarr.deleted == [(3, True, True)]     # lowest id, once
+
+
+def test_group_tripping_both_gates_acts_once():
+    record = _preair_record(158)
+    record["status"] = "completed"
+    record["statusMessages"] = [{"title": "t", "messages": [NO_FILES_MSG]}]
+    sonarr = FakeArr([record])
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=30)}}
+    watcher.run_once()
+    assert len(sonarr.deleted) == 1
+    assert len(notes) == 1
+
+
+def test_above_cap_acts_on_nothing_and_notifies_once():
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in range(1, 6)]
+    sonarr = FakeArr(records)
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    assert sonarr.deleted == []
+    assert len(notes) == 1
+    assert notes[0][1] == 5                        # high priority
+    watcher.run_once()                             # still anomalous
+    assert len(notes) == 1                         # not repeated
+
+
+def test_anomaly_flag_resets_when_count_returns_to_normal():
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in range(1, 6)]
+    sonarr = FakeArr(records)
+    watcher, notes = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    assert len(notes) == 1
+    sonarr.records = []
+    watcher.run_once()
+    sonarr.records = records
+    watcher.run_once()
+    assert len(notes) == 2                         # notifies again
+
+
+def test_one_app_down_aborts_the_cycle_without_acting():
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, _ = _watcher(sonarr, FakeArr(fail=True))
+    with pytest.raises(RuntimeError):
+        watcher.run_once()
+    assert sonarr.deleted == []
+
+
+def test_preair_disabled_leaves_gate_a_working():
+    class NoPreair(FakeSettings):
+        queue_watch_preair_enabled = False
+
+    sonarr = FakeArr([_preair_record(158), _stuck_record(rec_id=50, download_id="STUCK")])
+    watcher, _ = _watcher(sonarr, FakeArr(), settings=NoPreair())
+    watcher._first_seen = {"sonarr": {"STUCK": NOW - timedelta(minutes=30)}}
+    watcher.run_once()
+    assert sonarr.deleted == [(50, True, False)]
+
+
+def test_delete_failure_does_not_abort_remaining_candidates():
+    class Flaky(FakeArr):
+        def delete_queue_item(self, queue_id, blocklist=True, skip_redownload=False):
+            if queue_id == 1:
+                raise RuntimeError("boom")
+            self.deleted.append((queue_id, blocklist, skip_redownload))
+
+    sonarr = Flaky([_preair_record(158, rec_id=1, download_id="A"),
+                    _preair_record(158, rec_id=2, download_id="B")])
+    watcher, _ = _watcher(sonarr, FakeArr())
+    watcher.run_once()
+    assert sonarr.deleted == [(2, True, True)]
+
+
+def test_dry_run_notifies_but_deletes_nothing():
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr(), settings=DryRun())
+    watcher.run_once()
+    assert sonarr.deleted == []
+    assert len(notes) == 1
+    assert "[SIMULAÇÃO]" in notes[0][0]
+    assert "NADA foi removido" in notes[0][2]
+
+
+def test_dry_run_does_not_re_notify_the_same_item():
+    """The item stays queued, so it is a candidate every cycle. Without dedup this would
+    fire every 10 minutes and the mode would be unusable."""
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr(), settings=DryRun())
+    watcher.run_once()
+    watcher.run_once()
+    watcher.run_once()
+    assert len(notes) == 1
+
+
+def test_dry_run_reports_again_after_the_item_leaves_and_returns():
+    sonarr = FakeArr([_preair_record(158)])
+    watcher, notes = _watcher(sonarr, FakeArr(), settings=DryRun())
+    watcher.run_once()
+    sonarr.records = []
+    watcher.run_once()
+    sonarr.records = [_preair_record(158)]
+    watcher.run_once()
+    assert len(notes) == 2
+
+
+def test_dry_run_still_respects_the_cap():
+    records = [_preair_record(158, rec_id=n, download_id=f"D{n}") for n in range(1, 6)]
+    watcher, notes = _watcher(FakeArr(records), FakeArr(), settings=DryRun())
+    watcher.run_once()
+    assert len(notes) == 1
+    assert "anomalia" in notes[0][0]

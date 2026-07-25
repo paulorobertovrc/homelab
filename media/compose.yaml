@@ -278,7 +278,22 @@ services:
       - 8095:80
     environment:
       - TZ=${TZ:-America/Cuiaba}
-      - NTFY_BASE_URL=http://${LAN_IP:-localhost}:8095
+      # Must match the URL the iOS app actually subscribes to, NOT the LAN address:
+      # the upstream push is routed by the SHA256 of the topic URL, so a mismatch
+      # means the APNs wake-up never finds the subscription. The phone reaches ntfy
+      # over the tailscale-ntfy sidecar below, so that hostname is the real identity.
+      # Safe for desktop: the web app is origin-relative ("base_url": "" in the
+      # served config.js), so http://<lan>:8095 keeps working unchanged. base-url
+      # otherwise only feeds attachment URLs (0 in use) and the e-mail footer
+      # (enable_emails=false).
+      - NTFY_BASE_URL=${NTFY_PUBLIC_URL:-https://ntfy.tailc88a9f.ts.net}
+      # iOS cannot do instant push from a self-hosted server: "iOS heavily restricts
+      # background processing, which sadly makes it impossible to implement instant
+      # push notifications without a central server" (ntfy docs). This forwards a
+      # poll request to ntfy.sh, which owns the Apple credentials. Only the message
+      # ID and the SHA256 of the topic URL leave the network -- the upstream is sent
+      # the literal string "New message", never our content.
+      - NTFY_UPSTREAM_BASE_URL=${NTFY_UPSTREAM_BASE_URL:-https://ntfy.sh}
       - NTFY_CACHE_FILE=/var/cache/ntfy/cache.db
       - NTFY_AUTH_FILE=/var/cache/ntfy/auth.db
       - NTFY_ATTACHMENT_CACHE_DIR=/var/cache/ntfy/attachments

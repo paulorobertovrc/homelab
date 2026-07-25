@@ -3,8 +3,49 @@ import os
 from dataclasses import dataclass
 
 
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off")
+
+
 def _env_bool(name: str, default: str) -> bool:
-    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+    """Strict boolean: an unrecognised token is an error, never a silent guess.
+
+    The permissive version treated anything outside the true-list as False. That is
+    harmless for an on/off flag, but QUEUE_WATCH_DRY_RUN inverts the stakes -- there,
+    False means ARMED, so `ture`, `sim`, `y` or a stray quote silently armed a
+    watcher that deletes torrents and their data. Refusing to guess costs a restart
+    and a one-character fix; guessing wrong costs downloads.
+
+    Blank reads as unset, matching compose's `${FOO:-default}`.
+    """
+    raw = os.environ.get(name, default).strip()
+    if not raw:
+        raw = default.strip()
+    token = raw.lower()
+    if token in _TRUE:
+        return True
+    if token in _FALSE:
+        return False
+    raise ValueError(
+        f"{name} must be one of {_TRUE + _FALSE} (got {raw!r}). "
+        "Refusing to guess: for QUEUE_WATCH_DRY_RUN a wrong guess is the "
+        "difference between simulating and deleting."
+    )
+
+
+def _env_int(name: str, default: str, minimum: int) -> int:
+    """Integer knob with a floor, so a nonsensical value fails at startup.
+
+    Only the pre-air margin used to be validated. The rest could each produce a
+    failure that looks healthy from outside: INTERVAL_MIN=0 is a hot loop hammering
+    both *arr APIs, a negative interval makes sleep() raise and kills the daemon
+    thread while the container stays healthy, and MAX_PER_CYCLE<1 leaves the watcher
+    permanently inert.
+    """
+    value = int(os.environ.get(name, default))
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum} (got {value}).")
+    return value
 
 
 @dataclass(frozen=True)
@@ -41,6 +82,11 @@ class Settings:
                 "a zero margin would blocklist legitimate releases, which routinely "
                 "appear a couple of hours before airDateUtc."
             )
+        # Floors, not style: see _env_int. min age may be 0 ("act on first sighting"),
+        # which is coherent and is already how gate B behaves.
+        interval_min = _env_int("QUEUE_WATCH_INTERVAL_MIN", "10", minimum=1)
+        min_age_min = _env_int("QUEUE_WATCH_MIN_AGE_MIN", "15", minimum=0)
+        max_per_cycle = _env_int("QUEUE_WATCH_MAX_PER_CYCLE", "3", minimum=1)
         return cls(
             radarr_url=os.environ.get("RADARR_URL", "http://172.39.0.4:7878"),
             radarr_key=os.environ["RADARR_API_KEY"],
@@ -57,9 +103,9 @@ class Settings:
             sample_seconds=int(os.environ.get("SAMPLE_SECONDS", "30")),
             skip_intro_fraction=float(os.environ.get("SKIP_INTRO_FRACTION", "0.1")),
             queue_watch_enabled=_env_bool("QUEUE_WATCH_ENABLED", "true"),
-            queue_watch_interval_min=int(os.environ.get("QUEUE_WATCH_INTERVAL_MIN", "10")),
-            queue_watch_min_age_min=int(os.environ.get("QUEUE_WATCH_MIN_AGE_MIN", "15")),
-            queue_watch_max_per_cycle=int(os.environ.get("QUEUE_WATCH_MAX_PER_CYCLE", "3")),
+            queue_watch_interval_min=interval_min,
+            queue_watch_min_age_min=min_age_min,
+            queue_watch_max_per_cycle=max_per_cycle,
             queue_watch_preair_enabled=_env_bool("QUEUE_WATCH_PREAIR_ENABLED", "true"),
             queue_watch_preair_margin_h=preair_margin,
             # Ships simulating. Arming is a deliberate act, not a side effect of deploying.

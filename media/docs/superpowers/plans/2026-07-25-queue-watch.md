@@ -1515,6 +1515,31 @@ nothing flagged, but that is far short of "a full day." `QUEUE_WATCH_DRY_RUN` st
 default (`true`); arming is left for the user to do by hand once they've watched dry-run
 output over real traffic and the three criteria above are actually met.
 
+> **⚠️ The criteria above were unsatisfiable as written, and are superseded.** A review
+> found that *no* ntfy notification with an emoji in its title had ever been delivered:
+> `requests` encodes header values as latin-1, an emoji raises `UnicodeEncodeError` before
+> a byte leaves the process, and `notify.push`'s bare `except Exception: pass` swallowed it.
+> Live since 2026-07-04 — a real import-gate quarantine fired 2026-07-25 10:24 and never
+> reached the phone. Every queue-watch title starts with an emoji, so criteria 2 and 3 ("a
+> `[SIMULAÇÃO]` notification whose verdict you agree with", "reflects what you actually saw
+> on the phone") could never be met, and a silent dry-run would have read as a clean one.
+>
+> Fixed in `58512e7` (RFC 2047 encoding, verified against the live ntfy). **The observation
+> window must be re-run from scratch** — nothing before that commit constitutes evidence.
+>
+> Revised criteria, unchanged in spirit:
+>
+> 1. At least one full day of cycles with no `queue-watch: cycle failed` in the logs.
+> 2. Either a `[SIMULAÇÃO]` notification **that actually arrived on the phone** and whose
+>    verdict you agree with, or a clean run with nothing flagged. A flagged item you would
+>    NOT have removed means stop and re-tune, not arm.
+> 3. `docker logs import-gate 2>&1 | grep -c "DRY-RUN"` matches the number of
+>    `[SIMULAÇÃO]` notifications you received. A mismatch now means a real problem, since
+>    the delivery path is no longer broken by construction.
+> 4. **New:** confirm the startup banner says what you expect. A mutation that made it
+>    always print `DRY-RUN` survived the entire original suite — that line is the only
+>    confirmation of which mode is live, so it is now asserted by a test.
+
 - [ ] **Step 7: Update the README**
 
 In `README.md`, in the fake-release guard bullet, replace this sentence:

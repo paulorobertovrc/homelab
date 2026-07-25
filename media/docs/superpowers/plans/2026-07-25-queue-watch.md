@@ -1524,8 +1524,18 @@ output over real traffic and the three criteria above are actually met.
 > `[SIMULAÇÃO]` notification whose verdict you agree with", "reflects what you actually saw
 > on the phone") could never be met, and a silent dry-run would have read as a clean one.
 >
-> Fixed in `58512e7` (RFC 2047 encoding, verified against the live ntfy). **The observation
-> window must be re-run from scratch** — nothing before that commit constitutes evidence.
+> Fixed in `58512e7` (RFC 2047 encoding, verified against the live ntfy).
+>
+> A second, independent defect had the same symptom: the iPhone only showed ntfy messages
+> when the app was opened by hand. The self-hosted server had no `upstream-base-url`, which
+> iOS requires (only ntfy.sh holds the Apple credentials), *and* its `base-url` named the LAN
+> address while the phone subscribes over the Tailscale sidecar — and the upstream push is
+> routed by the SHA256 of the topic URL, so fixing either one alone would have changed
+> nothing. Fixed in `0407a47`, validated live on the device.
+>
+> **The observation window must be re-run from scratch, with 2026-07-25 as the baseline.**
+> Nothing before `0407a47` constitutes evidence: until then a `[SIMULAÇÃO]` either never left
+> the process or never woke the phone.
 >
 > Revised criteria, unchanged in spirit:
 >

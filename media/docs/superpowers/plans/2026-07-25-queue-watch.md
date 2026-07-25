@@ -52,8 +52,16 @@ container unhealthy nor touches import validation.
 **Interfaces:**
 - Consumes: existing `ArrClient._req(method, path, **kw)`
 - Produces:
-  - `ArrClient.get_queue(include_episode: bool = False) -> list[dict]`
-  - `ArrClient.delete_queue_item(queue_id: int, blocklist: bool = True) -> None`
+  - `ArrClient.get_queue(include_episode: bool = False) -> list[dict]` — **fully paginated**
+  - `ArrClient.delete_queue_item(queue_id: int, blocklist: bool = True, skip_redownload: bool = False) -> None`
+
+**Why pagination is mandatory, not polish:** a season pack is N queue records sharing a
+downloadId. If a page boundary falls inside a pack, the watcher sees only part of the group
+— and the pre-air gate's `all()` would then be judging a subset. Proven in a throwaway
+prototype: a 4-record pack with 2 aired episodes is correctly spared when whole, and
+**wrongly caught** when sliced to its 2 future records. Fetching a partial view is not an
+acceptable failure mode, and simply erroring out would silently disable the watcher whenever
+someone queues a big season, so it pages to the end.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -63,7 +71,7 @@ Append to `import-gate/tests/test_arr_client.py`:
 def test_get_queue_returns_records():
     s = FakeSession()
     s.responses[("GET", "http://radarr:7878/api/v3/queue")] = FakeResp(200, {
-        "records": [{"id": 1, "downloadId": "ABC"}]
+        "records": [{"id": 1, "downloadId": "ABC"}], "totalRecords": 1
     })
     assert _client(s).get_queue() == [{"id": 1, "downloadId": "ABC"}]
     assert s.calls[0][2]["params"]["pageSize"] == 200
@@ -89,6 +97,34 @@ def test_get_queue_omits_episode_by_default():
     assert "includeEpisode" not in s.calls[0][2]["params"]
 
 
+class PagingSession(FakeSession):
+    """Serves totalRecords across several pages, one page per call."""
+
+    def __init__(self, pages, total):
+        super().__init__()
+        self.pages = pages
+        self.total = total
+
+    def request(self, method, url, **kw):
+        self.calls.append((method, url, kw))
+        page = kw["params"]["page"]
+        return FakeResp(200, {"records": self.pages[page - 1], "totalRecords": self.total})
+
+
+def test_get_queue_follows_every_page():
+    """A season pack split across a page boundary would otherwise be judged partial."""
+    s = PagingSession([[{"id": 1}, {"id": 2}], [{"id": 3}]], total=3)
+    assert [r["id"] for r in _client(s).get_queue()] == [1, 2, 3]
+    assert [c[2]["params"]["page"] for c in s.calls] == [1, 2]
+
+
+def test_get_queue_stops_on_an_empty_page():
+    """Guards against a server that reports a total it never delivers."""
+    s = PagingSession([[{"id": 1}], []], total=99)
+    assert [r["id"] for r in _client(s).get_queue()] == [1]
+    assert len(s.calls) == 2
+
+
 def test_delete_queue_item_sends_expected_params():
     s = FakeSession()
     _client(s).delete_queue_item(590404725)
@@ -107,6 +143,12 @@ def test_delete_queue_item_can_skip_blocklist():
     s = FakeSession()
     _client(s).delete_queue_item(42, blocklist=False)
     assert s.calls[0][2]["params"]["blocklist"] == "false"
+
+
+def test_delete_queue_item_can_skip_redownload():
+    s = FakeSession()
+    _client(s).delete_queue_item(42, skip_redownload=True)
+    assert s.calls[0][2]["params"]["skipRedownload"] == "true"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -119,21 +161,42 @@ Expected: FAIL — `AttributeError: 'ArrClient' object has no attribute 'get_que
 Append to `import-gate/arr_client.py`:
 
 ```python
-    def get_queue(self, include_episode: bool = False) -> list:
-        params = {"pageSize": 200}
-        if include_episode:
-            # Sonarr only: brings EpisodeResource (with airDateUtc) inline,
-            # which the pre-air gate needs.
-            params["includeEpisode"] = "true"
-        return self._req("GET", "/api/v3/queue", params=params).json().get("records", [])
+    QUEUE_PAGE_SIZE = 200
+    QUEUE_MAX_PAGES = 50
 
-    def delete_queue_item(self, queue_id: int, blocklist: bool = True) -> None:
+    def get_queue(self, include_episode: bool = False) -> list:
+        """Every queue record, following pagination to the end.
+
+        Partial views are unsafe here: a season pack is N records sharing a downloadId, so
+        a page boundary inside a pack would leave the pre-air gate judging a subset of the
+        group. Erroring out instead of paging would silently disable the watcher whenever a
+        big season is queued, so it pages.
+        """
+        records = []
+        for page in range(1, self.QUEUE_MAX_PAGES + 1):
+            params = {"page": page, "pageSize": self.QUEUE_PAGE_SIZE}
+            if include_episode:
+                # Sonarr only: brings EpisodeResource (with airDateUtc) inline,
+                # which the pre-air gate needs.
+                params["includeEpisode"] = "true"
+            payload = self._req("GET", "/api/v3/queue", params=params).json()
+            batch = payload.get("records", [])
+            records += batch
+            # `not batch` also guards against a server reporting a total it never serves.
+            if not batch or len(records) >= payload.get("totalRecords", len(records)):
+                return records
+        raise RuntimeError(
+            f"queue exceeded {self.QUEUE_MAX_PAGES} pages; refusing to act on a partial view"
+        )
+
+    def delete_queue_item(self, queue_id: int, blocklist: bool = True,
+                          skip_redownload: bool = False) -> None:
         # blocklist=true is what stops the *arr from re-grabbing the same release
         # on the next RSS pass; without it this would loop.
         self._req("DELETE", f"/api/v3/queue/{queue_id}", params={
             "removeFromClient": "true",
             "blocklist": "true" if blocklist else "false",
-            "skipRedownload": "false",
+            "skipRedownload": "true" if skip_redownload else "false",
             "changeCategory": "false",
         })
 ```
@@ -141,7 +204,7 @@ Append to `import-gate/arr_client.py`:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_arr_client.py -q`
-Expected: PASS (11 tests)
+Expected: PASS (14 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -177,9 +240,20 @@ from config import Settings
 
 BASE_ENV = {"RADARR_API_KEY": "R", "SONARR_API_KEY": "S"}
 
+# Cleared before every case. Without this the defaults test would read whatever the
+# developer happens to have exported and pass or fail by accident.
+QUEUE_KEYS = (
+    "QUEUE_WATCH_ENABLED",
+    "QUEUE_WATCH_INTERVAL_MIN",
+    "QUEUE_WATCH_MIN_AGE_MIN",
+    "QUEUE_WATCH_MAX_PER_CYCLE",
+    "QUEUE_WATCH_PREAIR_ENABLED",
+    "QUEUE_WATCH_PREAIR_MARGIN_H",
+)
+
 
 def _env(monkeypatch, **overrides):
-    for k in list(overrides) + list(BASE_ENV):
+    for k in QUEUE_KEYS:
         monkeypatch.delenv(k, raising=False)
     for k, v in {**BASE_ENV, **overrides}.items():
         monkeypatch.setenv(k, v)
@@ -328,6 +402,21 @@ def test_records_without_download_id_are_dropped():
     assert group_by_download_id([{"id": 1}, {"id": 2, "downloadId": ""}]) == {}
 
 
+def test_records_without_id_are_dropped():
+    """The action picks min(record['id']); an id-less record would raise KeyError there,
+    outside the per-candidate try, aborting the cycle and skipping every other candidate."""
+    assert group_by_download_id([{"downloadId": "ABC"}]) == {}
+
+
+def test_one_id_less_record_discards_its_whole_group():
+    """Dropping just the bad record would leave a PARTIAL group -- and the pre-air gate's
+    all() over a subset is precisely the failure pagination exists to prevent. Proven
+    adversarially: a pack whose only aired episode lacks an id looks entirely pre-air and
+    gets destroyed. Either the group is whole or it is not considered."""
+    records = [{"id": 1, "downloadId": "PACK"}, {"downloadId": "PACK"}]
+    assert group_by_download_id(records) == {}
+
+
 def test_empty_input_gives_empty_groups():
     assert group_by_download_id([]) == {}
 ```
@@ -364,18 +453,28 @@ def group_by_download_id(records: list) -> dict:
     decision, of counting against the per-cycle cap, and of action.
     """
     groups = {}
+    incomplete = set()
     for record in records:
         download_id = record.get("downloadId")
         if not download_id:
             continue
+        if record.get("id") is None:
+            # The action needs min(id) across the group, so an id-less record is
+            # unactionable. Dropping only that record would leave a PARTIAL group, and the
+            # pre-air gate's all() over a subset is the exact failure mode pagination
+            # exists to prevent -- so the whole group goes.
+            incomplete.add(download_id)
+            continue
         groups.setdefault(download_id, []).append(record)
+    for download_id in incomplete:
+        groups.pop(download_id, None)
     return groups
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: PASS (3 tests)
+Expected: PASS (5 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -542,7 +641,7 @@ def find_stuck(groups: dict, now, first_seen: dict, min_age_min: int):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: PASS (10 tests)
+Expected: PASS (12 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -639,12 +738,30 @@ def test_unparseable_air_date_is_spared():
     record = _preair_record(158)
     record["episode"]["airDateUtc"] = "not a date"
     assert find_preair(group_by_download_id([record]), NOW, 24) == []
+
+
+def test_naive_air_date_is_spared_not_crashed():
+    """A timezone-less timestamp parses fine but cannot be compared to an aware `now`:
+    Python raises TypeError, which would escape find_preair and abort the whole cycle.
+    Verified in a prototype. Treat it as unparseable instead."""
+    record = _preair_record(158)
+    record["episode"]["airDateUtc"] = "2026-07-31T04:00:00"
+    assert find_preair(group_by_download_id([record]), NOW, 24) == []
+
+
+def test_date_only_air_date_is_spared_not_crashed():
+    """Sonarr also carries a plain `airDate` (date, no time). If that ever lands in this
+    field it parses to a naive midnight -- same TypeError, same handling."""
+    record = _preair_record(158)
+    record["episode"]["airDateUtc"] = "2026-07-31"
+    assert find_preair(group_by_download_id([record]), NOW, 24) == []
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: FAIL — `ImportError: cannot import name 'find_preair'`
+Expected: FAIL — `ImportError: cannot import name 'find_preair'`. Note the two naive-date
+tests must fail with `TypeError`, not a clean assertion — that is the bug they exist to pin.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -658,13 +775,22 @@ and append:
 
 ```python
 def _parse_air_date(value):
-    """Returns an aware datetime, or None when the field is missing or malformed."""
+    """Returns an aware datetime, or None when missing, malformed, or timezone-naive.
+
+    The naive case matters: `datetime.fromisoformat` accepts a timestamp with no offset
+    and returns a naive object, which then raises TypeError when compared against an aware
+    `now` -- escaping this function and aborting the entire cycle. Rejecting it here turns
+    a crash into a spared group, which is the safe direction.
+    """
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError, TypeError):
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def find_preair(groups: dict, now, margin_h: int):
@@ -696,7 +822,7 @@ def find_preair(groups: dict, now, margin_h: int):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: PASS (18 tests)
+Expected: PASS (22 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -744,8 +870,8 @@ class FakeArr:
         self.include_episode = include_episode
         return self.records
 
-    def delete_queue_item(self, queue_id, blocklist=True):
-        self.deleted.append((queue_id, blocklist))
+    def delete_queue_item(self, queue_id, blocklist=True, skip_redownload=False):
+        self.deleted.append((queue_id, blocklist, skip_redownload))
 
 
 class FakeSettings:
@@ -773,7 +899,7 @@ def test_mature_stuck_group_is_removed_and_notified():
     assert sonarr.deleted == []
     watcher._now = lambda: NOW + timedelta(minutes=20)
     acted = watcher.run_once()
-    assert sonarr.deleted == [(1, True)]
+    assert sonarr.deleted == [(1, True, False)]     # gate A wants the re-search
     assert len(acted) == 1
     assert len(notes) == 1
     assert "LimeTorrents" in notes[0][2]
@@ -784,8 +910,24 @@ def test_preair_group_is_removed_on_the_first_cycle():
     sonarr = FakeArr([_preair_record(158)])
     watcher, notes = _watcher(sonarr, FakeArr())
     watcher.run_once()
-    assert sonarr.deleted == [(1, True)]
+    assert sonarr.deleted == [(1, True, True)]
     assert "158" in notes[0][2]
+
+
+def test_preair_skips_redownload_but_gate_a_does_not():
+    """Forcing an immediate re-search for an episode that does not exist yet can only
+    turn up another fake, feeding the loop. Gate A's re-search, by contrast, is the point:
+    a real release for that episode probably exists."""
+    preair = FakeArr([_preair_record(158)])
+    watcher, _ = _watcher(preair, FakeArr())
+    watcher.run_once()
+    assert preair.deleted[0][2] is True
+
+    stuck = FakeArr([_stuck_record()])
+    watcher, _ = _watcher(stuck, FakeArr())
+    watcher._first_seen = {"sonarr": {"ABC": NOW - timedelta(minutes=30)}}
+    watcher.run_once()
+    assert stuck.deleted[0][2] is False
 
 
 def test_sonarr_queue_is_fetched_with_episode_data():
@@ -808,7 +950,7 @@ def test_pack_of_many_records_gets_exactly_one_delete():
     sonarr = FakeArr(records)
     watcher, _ = _watcher(sonarr, FakeArr())
     watcher.run_once()
-    assert sonarr.deleted == [(3, True)]          # lowest id, once
+    assert sonarr.deleted == [(3, True, True)]     # lowest id, once
 
 
 def test_group_tripping_both_gates_acts_once():
@@ -864,21 +1006,21 @@ def test_preair_disabled_leaves_gate_a_working():
     watcher, _ = _watcher(sonarr, FakeArr(), settings=NoPreair())
     watcher._first_seen = {"sonarr": {"STUCK": NOW - timedelta(minutes=30)}}
     watcher.run_once()
-    assert sonarr.deleted == [(50, True)]
+    assert sonarr.deleted == [(50, True, False)]
 
 
 def test_delete_failure_does_not_abort_remaining_candidates():
     class Flaky(FakeArr):
-        def delete_queue_item(self, queue_id, blocklist=True):
+        def delete_queue_item(self, queue_id, blocklist=True, skip_redownload=False):
             if queue_id == 1:
                 raise RuntimeError("boom")
-            self.deleted.append((queue_id, blocklist))
+            self.deleted.append((queue_id, blocklist, skip_redownload))
 
     sonarr = Flaky([_preair_record(158, rec_id=1, download_id="A"),
                     _preair_record(158, rec_id=2, download_id="B")])
     watcher, _ = _watcher(sonarr, FakeArr())
     watcher.run_once()
-    assert sonarr.deleted == [(2, True)]
+    assert sonarr.deleted == [(2, True, True)]
 ```
 
 Add `import pytest` to the top of the test file.
@@ -971,16 +1113,21 @@ class QueueWatcher:
         records = candidate["records"]
         # removeFromClient drops the whole torrent, so the sibling records of a season
         # pack vanish with it -- one DELETE per group, not per record.
+        # group_by_download_id guarantees every record here has an "id".
         queue_id = min(r["id"] for r in records)
         title = records[0].get("title", "?")
         indexer = records[0].get("indexer") or "?"
+        is_preair = "preair" in candidate["gates"]
         try:
-            candidate["client"].delete_queue_item(queue_id)
+            # Pre-air skips the forced re-search: the episode does not exist yet, so an
+            # immediate search can only surface another fake and feed the loop. Let the
+            # scheduled RSS pick it up naturally once it has actually aired.
+            candidate["client"].delete_queue_item(queue_id, skip_redownload=is_preair)
         except Exception as e:
             logger.error("queue-watch: could not remove %s: %s", title, e)
             return False
 
-        if "preair" in candidate["gates"]:
+        if is_preair:
             reason = (f"episódio ainda não exibido "
                       f"({candidate.get('hours_early')}h de antecedência)")
             heading = "🚫 queue-watch: grab pre-air"
@@ -1011,7 +1158,7 @@ def _merge_by_group(candidates: list) -> list:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: PASS (29 tests)
+Expected: PASS (34 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -1101,7 +1248,7 @@ def run_forever(watcher, interval_min: int, sleep_fn=time.sleep) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd import-gate && python -m pytest tests/test_queue_watch.py -q`
-Expected: PASS (31 tests)
+Expected: PASS (36 tests)
 
 - [ ] **Step 5: Wire it into app.py**
 
@@ -1126,7 +1273,18 @@ Replace the `application = create_app(...)` block in `__main__` with:
     # import validation, which is the more valuable defence.
     if s.queue_watch_enabled:
         from queue_watch import QueueWatcher, run_forever
-        watcher = QueueWatcher(s, sonarr_client, radarr_client, _push)
+        # Dedicated ArrClients: each one owns a requests.Session, and the clients above are
+        # driven by Flask's request threads. The requests docs do not state that Session is
+        # thread-safe -- and the codebase shows thread-safety being added deliberately where
+        # it mattered (HTTPDigestAuth keeps state in threading.local), which suggests it is
+        # not a blanket property. A second pair of clients costs nothing and removes the
+        # question entirely.
+        watcher = QueueWatcher(
+            s,
+            ArrClient(s.sonarr_url, s.sonarr_key, "sonarr"),
+            ArrClient(s.radarr_url, s.radarr_key, "radarr"),
+            _push,
+        )
         threading.Thread(
             target=run_forever,
             args=(watcher, s.queue_watch_interval_min),

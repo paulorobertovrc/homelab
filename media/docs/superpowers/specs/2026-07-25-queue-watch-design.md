@@ -107,6 +107,19 @@ otimização, é correção — sem o agrupamento:
 
 O grupo é a unidade de decisão, de contagem contra o teto e de ação.
 
+**Invariante: nunca julgar um grupo parcial.** O portão B decide por `all()` sobre os
+episódios do grupo, então ver só parte dele inverte o veredicto — um pack legítimo cujos
+episódios já exibidos ficaram de fora parece inteiramente pre-air e é destruído. Verificado em
+protótipo: um pack de 4 registros com 2 episódios exibidos é corretamente poupado inteiro e
+**erradamente removido** quando fatiado. Duas consequências obrigatórias:
+
+- `get_queue` **pagina até o fim** em vez de usar um `pageSize` fixo. Abortar quando a fila
+  excede a página seria a alternativa simples, mas desligaria o watcher em silêncio sempre que
+  alguém enfileirasse uma temporada grande.
+- Um registro sem `id` (inacionável, já que a ação usa `min(id)` do grupo) **descarta o grupo
+  inteiro**, não apenas aquele registro. Descartar só o registro reintroduziria exatamente o
+  mesmo defeito em escala menor.
+
 O campo **`indexer` já vem no próprio `QueueResource`** — não é preciso consultar o `/history`
 para descobrir a origem.
 
@@ -131,8 +144,12 @@ O quantificador é **todos**, e é o que protege season packs: um pack de tempor
 mistura episódios já exibidos com futuros, então basta um episódio já no ar para o grupo
 sobreviver. Um grab genuinamente pre-air não tem nenhum.
 
-Registro sem `episode` ou sem `airDateUtc` (metadados faltando, especiais) **não** conta como
-pre-air e faz o grupo inteiro ser poupado — a ausência de dado nunca autoriza a ação.
+Registro sem `episode`, sem `airDateUtc`, com data ilegível **ou com data sem fuso horário**
+não conta como pre-air e faz o grupo inteiro ser poupado — a ausência de dado nunca autoriza a
+ação. O caso do fuso não é hipotético: `datetime.fromisoformat` aceita um timestamp sem offset
+e devolve um objeto *naive*, que ao ser comparado com um `now` *aware* levanta `TypeError` —
+verificado em protótipo — escapando da função e abortando o ciclo inteiro. Tratá-lo como
+ilegível troca um crash por um grupo poupado.
 
 Só se aplica ao **Sonarr**. Filmes têm o *Minimum Availability* nativo do Radarr, que já cobre o
 caso a montante.
@@ -190,6 +207,11 @@ desaparecem junto — daí um `DELETE` por grupo, não por registro.
 `blocklist=true` é o que impede o Sonarr de reagarrar a mesma release no ciclo seguinte —
 sem ele o watcher entraria em loop com o RSS.
 
+`skipRedownload` difere por portão: **`false` no A, `true` no B**. No portão A a re-busca é o
+objetivo — existe um arquivo bom para aquele episódio em algum lugar. No portão B o episódio
+ainda não existe, então forçar busca imediata só pode trazer outra fake e realimentar o ciclo;
+melhor deixar o RSS agendado pegar naturalmente depois da estreia.
+
 ### Notificação
 
 Um ntfy por grupo removido, dizendo qual portão disparou e contendo título da release **e
@@ -202,8 +224,8 @@ horas, que é a evidência da decisão.
 
 Dois métodos novos em `ArrClient`:
 
-- `get_queue(include_episode=False)` → `GET /api/v3/queue?pageSize=200`
-- `delete_queue_item(queue_id, blocklist=True)` → o `DELETE` acima
+- `get_queue(include_episode=False)` → `GET /api/v3/queue`, paginado até esgotar `totalRecords`
+- `delete_queue_item(queue_id, blocklist=True, skip_redownload=False)` → o `DELETE` acima
 
 Módulo novo `queue_watch.py`, com a lógica de decisão isolada em funções puras:
 
@@ -228,6 +250,12 @@ Ligado em `app.py` como thread daemon, com `try/except` cobrindo o ciclo inteiro
 exceção vira log e o loop continua. O `/health` segue medindo apenas o Flask — falha do poller
 nunca marca o container unhealthy nem toca o caminho de validação de imports, que é a defesa
 mais valiosa do stack.
+
+A thread recebe **instâncias próprias** de `ArrClient`, não as que o Flask usa. Cada `ArrClient`
+carrega um `requests.Session`, e a documentação do requests não afirma que `Session` seja
+thread-safe — a própria base de código mostra thread-safety sendo adicionada deliberadamente
+onde importava (`HTTPDigestAuth` guardando estado em `threading.local`), o que indica não ser
+propriedade geral do objeto. Um segundo par de clientes custa nada e elimina a dúvida.
 
 ### Configuração (compose)
 
@@ -261,6 +289,9 @@ em vez de silenciosamente ativar o modo que blocklista releases boas.
 | Season pack de temporada em andamento | Tem episódio já exibido → o "todos" falha → poupado |
 | Season pack de 10 episódios travado | Um grupo, não 10: conta 1 contra o teto, sofre 1 `DELETE` |
 | Episódio sem `airDateUtc` (special, metadado faltando) | Não conta como pre-air; grupo poupado |
+| `airDateUtc` sem fuso horário ou ilegível | Tratado como ausente; grupo poupado (sem `TypeError`) |
+| Fila maior que uma página | Paginada até o fim; nenhum grupo é julgado pela metade |
+| Registro do grupo sem `id` | Grupo inteiro descartado, não só o registro |
 | Sonarr ainda processando um import legítimo | Não casa a mensagem; ignorado |
 | Item recém-travado (< 15 min) | Visto e cronometrado, nenhuma ação |
 | Disco cheio/desmontado → muitos itens travados | Acima do teto: **zero ações**, um ntfy de anomalia (não repetido) |

@@ -237,11 +237,28 @@ services:
     image: willfarrell/autoheal:latest
     container_name: autoheal
     restart: unless-stopped
+    # Joined servarr_network 2026-07-26 solely to reach ntfy: autoheal previously sat
+    # on the default network and could not resolve/route to it, so WEBHOOK_URL could
+    # never have worked. Static IP because a container without one already stole
+    # gluetun's reserved .2 once (see recyclarr) and broke the whole stack on restart.
+    networks:
+      servarr_network:
+        ipv4_address: ${SET_IP_AUTOHEAL:-172.31.0.22}
     environment:
       - AUTOHEAL_CONTAINER_LABEL=autoheal
       - AUTOHEAL_INTERVAL=30
       - AUTOHEAL_START_PERIOD=120
       - TZ=${TZ:-America/Cuiaba}
+      # Notify ntfy on every heal. Without this the 2026-07-26 gluetun flap restarted
+      # three times in silence — and the "<3 flaps/month keeps AirVPN" decision is
+      # unmeasurable if the events never surface. autoheal POSTs {"content":"<text>"};
+      # ntfy's template=yes + {{.content}} unwraps that JSON into a plain message
+      # (verified live — ntfy 2.25.0 ignores the ${...} placeholder syntax).
+      # The braces MUST stay percent-encoded (%7B%7B.content%7D%7D): autoheal posts
+      # via curl, and curl reads a literal { } as glob syntax and dies with
+      # "URL malformed" (exit 3) before sending anything. Verified both ways.
+      - WEBHOOK_JSON_KEY=content
+      - WEBHOOK_URL=http://${SET_IP_NTFY:-172.39.0.10}:80/arr-media?template=yes&m=%7B%7B.content%7D%7D&title=Autoheal:+container+reiniciado&priority=high&tags=rotating_light
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 

@@ -99,7 +99,13 @@ class Settings:
             whisper_model=os.environ.get("WHISPER_MODEL", "small"),
             lang_prob_threshold=float(os.environ.get("LANG_PROB_THRESHOLD", "0.7")),
             max_attempts=int(os.environ.get("MAX_ATTEMPTS", "3")),
-            sample_windows=int(os.environ.get("SAMPLE_WINDOWS", "3")),
+            # 6, not 3: three 30s windows over a 62-min episode is 90 seconds, and
+            # on the real Agent Kim S01E04 all three of the gate's offsets landed on
+            # English scenes of a track that is 6/9 Korean. The presence rule in
+            # validator.py only works if the sample is wide enough to find the
+            # original at all. Cost is bounded by the early return -- a stream that
+            # carries the original stops the loop on its first matching sample.
+            sample_windows=int(os.environ.get("SAMPLE_WINDOWS", "6")),
             sample_seconds=int(os.environ.get("SAMPLE_SECONDS", "30")),
             skip_intro_fraction=float(os.environ.get("SKIP_INTRO_FRACTION", "0.1")),
             queue_watch_enabled=_env_bool("QUEUE_WATCH_ENABLED", "true"),

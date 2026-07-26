@@ -66,13 +66,26 @@ def validate(path, original_language_name, expected_runtime_min, settings, trans
                     if prob >= settings.lang_prob_threshold:
                         votes.append(code)
                 if votes:
+                    # Presence, not plurality. The threat is a fully dubbed track,
+                    # and a dub scores ZERO in the original language -- measured on
+                    # the user's hand-quarantined Russian-audio files: ru x11, pt=0.
+                    # A bilingual episode, by contrast, still carries the original:
+                    # Agent Kim S01E04 profiled 6 Korean out of 9 confident samples
+                    # across all three releases of it. Asking "is the original the
+                    # plurality" rejected all three; asking "is the original present
+                    # at all" separates them with a 6-vs-0 margin.
+                    if orig_code in votes:
+                        return Verdict(True, "ok",
+                                       f"orig={orig_code}, stream {stream_index} carries it "
+                                       f"({votes.count(orig_code)}/{len(votes)} samples)")
                     counts = Counter(votes).most_common()
                     winner, top_count = counts[0]
                     tied = len(counts) > 1 and counts[1][1] == top_count
                     if not tied:
-                        if winner == orig_code:
-                            return Verdict(True, "ok", f"orig={orig_code}, stream {stream_index} matches")
-                        # Confident, but for a different language than expected.
+                        # Confident, and the original never appeared in this stream.
+                        # A tie still abstains: two different wrong guesses is the
+                        # signature of a confused model (whisper reads Korean as zh
+                        # in the measured data), not of a dub.
                         confident_mismatch = winner
     except Exception as e:  # extraction/other failure -> gate error, never quarantine
         return Verdict(True, "ok", f"gate error: {e}", errored=True)

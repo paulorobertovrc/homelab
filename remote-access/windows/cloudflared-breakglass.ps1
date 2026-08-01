@@ -30,7 +30,10 @@ tunnel: $tunnelId
 credentials-file: $credFile
 ingress:
   - hostname: breakglass.gab.ia.br
-    service: tcp://127.0.0.1:2222
+    # 100.64.0.3, não 127.0.0.1: o sshd (Task 4) escuta só no IP de tailnet
+    # (ListenAddress 100.64.0.3), não no loopback -- confirmado ao vivo em
+    # 2026-08-01, "connection actively refused" apontando pro 127.0.0.1.
+    service: tcp://100.64.0.3:2222
     originRequest:
       access:
         required: true

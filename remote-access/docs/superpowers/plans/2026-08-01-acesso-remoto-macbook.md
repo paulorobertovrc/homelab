@@ -61,6 +61,18 @@ Anotar a latência típica (ms). Não é preciso um teste de banda formal — RD
 
 Anotar no início da Task 6 deste arquivo (editar o checkbox da Task 6 com `[DIRECT — pulada]` ou `[RELAY — executar]`) antes de prosseguir para a Task 2.
 
+**Resultado real, medido em 2026-08-01 (MacBook em 5G, IP `189.93.53.169`, confirmadamente fora da
+LAN de casa):** assimétrico, não um DIRECT/RELAY único para o host inteiro.
+
+- `tailscale ping PC-PR`: DERP na 1ª resposta (91ms), **DIRECT** já na 2ª (`189.58.122.218:41641`,
+  117ms) — o UPnP do Archer mapeia sozinho a porta fixa 41641 do Windows, sem forward manual.
+- `tailscale ping gabinete-host`: **6 de 6 via DERP** (79–107ms), nunca direto, em ~6s de rajada —
+  consistente com a porta efêmera do `tailscaled` do WSL (ver Task 6).
+
+Decisão: como o RDP (o caso mais sensível a latência) tem como alvo o `PC-PR`, que já está DIRECT,
+a Task 6 foi **pulada** — só beneficiaria o SSH do `gabinete-host`, que tolera bem DERP. Decisão do
+usuário, registrada explicitamente, não uma suposição.
+
 ---
 
 ### Task 2: Fase 1 — ACL mínima no Headscale
@@ -454,6 +466,12 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ---
 
 ### Task 6: Fase 2d — Caminho UDP direto (CONDICIONAL — só se a Task 1 resultou em RELAY)
+
+**[PULADA em 2026-08-01]** — resultado da Task 1 foi assimétrico (PC-PR/RDP já DIRECT via UPnP;
+gabinete-host/SSH ficou RELAY). Decisão do usuário: não vale o esforço de mexer no roteador só para
+melhorar a latência do SSH, que já tolera bem DERP — o caso sensível (RDP) não precisa disso. Fica
+descrita abaixo para o caso de precisar revisitar (ex.: se o SSH relayado se mostrar problemático na
+prática).
 
 **Antes de começar:** conferir o resultado registrado na Task 1. Se foi `DIRECT`, marcar esta task como `[N/A — Fase 0 já mostrou caminho direto]` e pular para a Task 7.
 

@@ -26,6 +26,6 @@ ingress:
   - service: http_status:404
 "@ | Set-Content "$configDir\config.yml"
 
-cloudflared.exe service install --config "$configDir\config.yml"
+cloudflared.exe --config "$configDir\config.yml" service install
 Start-Service cloudflared
 Write-Output "Servico cloudflared (break-glass) instalado -- confirme com: Get-Service cloudflared"

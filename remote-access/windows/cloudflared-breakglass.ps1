@@ -35,6 +35,8 @@ ingress:
       access:
         required: true
         teamName: young-snow-b198
+        audTag:
+          - 6b4da48e9e6c07617c472772cc4b6ac2a725381f1c097daeb7bb23eeeb66bd71
   - service: http_status:404
 "@ | Set-Content "$configDir\config.yml"
 

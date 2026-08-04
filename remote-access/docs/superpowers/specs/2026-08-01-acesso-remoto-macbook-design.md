@@ -166,19 +166,52 @@ suspeitar de firewall do SO.
 **No MacBook:** `~/.ssh/config` com host `gab` → `gabinete-host.gab.internal`
 (MagicDNS já ativo) e host `gab-win` → IP de tailnet do PC-PR.
 
-> **Correção 2026-08-04 — "MagicDNS já ativo" é falso no MacBook.** O servidor
-> responde certo (`dig @100.100.100.100 pc-pr.gab.internal` → `100.64.0.3`,
-> `NOERROR`), mas o cliente Tailscale do macOS registrou apenas o *search
-> domain* `gab.internal` e **nunca instalou o mapeamento de resolver**:
-> `100.100.100.100` não aparece como nameserver em nenhum resolver do sistema
-> (`scutil --dns`), e a resolução pelo sistema dá `NXDOMAIN`. Por isso o
-> `~/.ssh/config` real usa IPs, não nomes.
+> **Correção 2026-08-04 — "MagicDNS já ativo" é falso no MacBook.** Resolução de
+> nomes do tailnet **não funciona** no macOS: `host pc-pr.gab.internal` dá
+> `NXDOMAIN`, embora `dig @100.100.100.100 pc-pr.gab.internal` responda
+> `100.64.0.3` com `NOERROR`. Por isso o `~/.ssh/config` real usa IPs, não nomes.
+>
+> **Causa raiz está no Headscale, não no cliente** (primeira leitura culpou o
+> macOS; errada). O servidor não emite a rota de split-DNS para o base domain:
+>
+> ```
+> $ tailscale dns status
+> Resolvers: 1.1.1.1, 9.9.9.9
+> Split DNS Routes: (no routes configured: split DNS disabled)
+> Search Domains: gab.internal
+> ```
+>
+> O cliente recebe só o *search domain* e resolvers globais, escreve apenas
+> `/etc/resolver/search.tailscale` (`search gab.internal`, sem nameserver) e
+> manda a consulta ao 1.1.1.1, que corretamente responde `NXDOMAIN`. O cliente
+> está obedecendo o que recebe. **`tailscale set --accept-dns=false/true` foi
+> testado em 2026-08-04 e NÃO resolve** — a preferência já estava `True`; o que
+> falta vem do control plane.
+>
+> Correção (no `/etc/headscale/config.yaml`, **não aplicada** — adiada por
+> decisão do usuário, ver custo abaixo):
+>
+> ```yaml
+> dns:
+>   nameservers:
+>     global: [1.1.1.1, 9.9.9.9]
+>     split:
+>       gab.internal: [100.100.100.100]
+> ```
+>
+> **Custo de aplicar:** exige reiniciar o `headscale`, e o DERP está *embutido*
+> nele (`derp.server.enabled: true`, region 999). Como o caminho até
+> `gabinete-host` é DERP-only (ver medição da Fase 0), o restart corta o acesso
+> ao WSL até o serviço voltar. Recuperação se a config quebrar: break-glass
+> (independente desde a correção de 2026-08-04) ou SSH/RDP no `pc-pr`, que tem
+> conexão direta, e de lá alcançar o WSL via `wsl.exe`. Recomendado **juntar com
+> a auditoria da ACL**, que mexe no mesmo arquivo e também pede restart — uma
+> janela em vez de duas. Valor isolado é baixo: MagicDNS aqui é conveniência,
+> tudo em produção usa IP.
 >
 > Sintoma no RDP: **erro `0x104`** ("PC can't be found") ao usar
 > `pc-pr.gab.internal` no Windows App. **Conectar por `100.64.0.3`** — validado
-> ao vivo em 2026-08-04, fora da LAN. Conserto do MagicDNS (não aplicado, nada
-> depende dele hoje): `tailscale set --accept-dns=false && tailscale set
-> --accept-dns=true`.
+> ao vivo em 2026-08-04, fora da LAN.
 >
 > Receita de RDP que funciona, para não redescobrir: *PC name* `100.64.0.3`;
 > usuário `PC-PR\Paulo Roberto` (conta **Local**, senha do Windows — RDP não

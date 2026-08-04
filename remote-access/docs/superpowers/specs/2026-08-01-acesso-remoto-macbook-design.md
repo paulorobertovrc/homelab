@@ -166,6 +166,27 @@ suspeitar de firewall do SO.
 **No MacBook:** `~/.ssh/config` com host `gab` → `gabinete-host.gab.internal`
 (MagicDNS já ativo) e host `gab-win` → IP de tailnet do PC-PR.
 
+> **Correção 2026-08-04 — "MagicDNS já ativo" é falso no MacBook.** O servidor
+> responde certo (`dig @100.100.100.100 pc-pr.gab.internal` → `100.64.0.3`,
+> `NOERROR`), mas o cliente Tailscale do macOS registrou apenas o *search
+> domain* `gab.internal` e **nunca instalou o mapeamento de resolver**:
+> `100.100.100.100` não aparece como nameserver em nenhum resolver do sistema
+> (`scutil --dns`), e a resolução pelo sistema dá `NXDOMAIN`. Por isso o
+> `~/.ssh/config` real usa IPs, não nomes.
+>
+> Sintoma no RDP: **erro `0x104`** ("PC can't be found") ao usar
+> `pc-pr.gab.internal` no Windows App. **Conectar por `100.64.0.3`** — validado
+> ao vivo em 2026-08-04, fora da LAN. Conserto do MagicDNS (não aplicado, nada
+> depende dele hoje): `tailscale set --accept-dns=false && tailscale set
+> --accept-dns=true`.
+>
+> Receita de RDP que funciona, para não redescobrir: *PC name* `100.64.0.3`;
+> usuário `PC-PR\Paulo Roberto` (conta **Local**, senha do Windows — RDP não
+> aceita PIN do Hello); acesso vem de `Administrators` (o grupo
+> `Remote Desktop Users` está vazio, e não precisa). No macOS 15+ é obrigatório
+> liberar **Privacidade e Segurança → Rede Local → Windows App**, e relançar o
+> app para a permissão valer.
+
 ### Fase 3 — Break-glass independente
 
 Segundo túnel `cloudflared`, rodando como serviço no Windows, expondo o

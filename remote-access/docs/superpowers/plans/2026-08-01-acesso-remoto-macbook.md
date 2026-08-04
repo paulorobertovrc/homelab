@@ -645,10 +645,24 @@ origin do túnel movido para `tcp://127.0.0.1:2222`. Assim o sshd sobe em qualqu
 break-glass não atravessa o Tailscale. Aplicado ao vivo e revalidado: SSH WSL, SSH Windows tailnet,
 RDP e break-glass — os quatro caminhos OK. Scripts do repo atualizados para gerar o estado corrigido.
 
-Nota: a validade de 24h do token significa que a emergência real **sempre** começa com login SSO a
-frio. Os 18s medidos não provam o pior caso — o org token em disco estava expirado, mas a sessão do
-navegador com o IdP é um cookie fora do alcance da medição. A dívida do `wsl --shutdown` **continua
-aberta**: a correção acima remove uma dependência conhecida, não substitui o teste sob falha real.
+Nota: a validade de 24h do token significa que a emergência real **sempre** começa com um login novo.
+**Os 18s NÃO medem esse caso** — confirmado com o usuário: ele apenas clicou "autorizar". São duas
+camadas de sessão e só uma havia expirado:
+
+1. **App token** (`breakglass.gab.ia.br-<aud>-token`, 24h) — expirado, reemitido no drill.
+2. **Sessão de organização** do Access (cookie de `young-snow-b198.cloudflareaccess.com` no
+   navegador) — ainda viva desde 01/08, e é ela que tornou o login um clique só.
+
+Ou seja, **o drill obrigatório do Step 3 nunca foi cumprido de fato** — nem em 2026-08-01 (mesma
+sessão de navegador quente) nem em 2026-08-04. O que o design condiciona ("se esse login não fechar
+em condições ruins, este canal não serve como break-glass") segue sem resposta. Para fazer o teste
+real sem derrubar a sessão de `equipe.gab.ia.br`: abrir a URL de login do `cloudflared access login`
+numa **janela anônima**, que não carrega o cookie de organização, e cronometrar o fluxo completo do
+IdP. Atenção ao provedor exigido — se for "One-time PIN", o break-glass passa a depender de acesso ao
+e-mail `paulor.vrcavalcanti@gmail.com` no momento da emergência, o que é uma dependência a registrar.
+
+A dívida do `wsl --shutdown` **continua aberta**: a correção acima remove uma dependência conhecida,
+não substitui o teste sob falha real.
 
 - [ ] **Step 4: Commit**
 

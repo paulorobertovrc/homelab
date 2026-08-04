@@ -630,6 +630,26 @@ break-glass existe para cobrir. Antes de contar com este canal numa emergência 
 numa janela de manutenção combinada — `wsl --shutdown` no Windows, depois repetir o Step 3 deste
 drill do MacBook, depois `wsl -d Ubuntu-26.04` (ou logoff/login) para religar o WSL.
 
+**Addendum 2 — 2026-08-04: o canal não era independente do Tailscale.** Redrill do MacBook, fora da
+LAN. O drill em si passou: token do Access expirado (validade medida: **24h exatas**), login SSO
+refeito em **18s**, `whoami` pelo túnel em **~1s** retornando `pc-pr\paulo roberto`. Mas a revisão do
+caminho expôs um furo que o Addendum 1 introduziu ao corrigir o "bad handshake": apontar o origin do
+túnel para `tcp://100.64.0.3:2222` fez o break-glass **depender da interface Tailscale do Windows**,
+contradizendo a propriedade que justifica a Fase 3 inteira. Como a falha coberta é reboot sem logon —
+o mesmo cenário do desconhecido "o Tailscale do Windows sobrevive sem sessão logada?" — o canal podia
+morrer exatamente na condição para a qual existe. Agravante: sem `tailscale0`, o sshd nem inicia
+(falha ao bindar; o Windows não tem equivalente ao `FreeBind` que resolve isso no lado WSL).
+
+Corrigido: `ListenAddress 127.0.0.1` adicionado ao sshd do Windows (mantido o bind de tailnet) e
+origin do túnel movido para `tcp://127.0.0.1:2222`. Assim o sshd sobe em qualquer condição e o
+break-glass não atravessa o Tailscale. Aplicado ao vivo e revalidado: SSH WSL, SSH Windows tailnet,
+RDP e break-glass — os quatro caminhos OK. Scripts do repo atualizados para gerar o estado corrigido.
+
+Nota: a validade de 24h do token significa que a emergência real **sempre** começa com login SSO a
+frio. Os 18s medidos não provam o pior caso — o org token em disco estava expirado, mas a sessão do
+navegador com o IdP é um cookie fora do alcance da medição. A dívida do `wsl --shutdown` **continua
+aberta**: a correção acima remove uma dependência conhecida, não substitui o teste sob falha real.
+
 - [ ] **Step 4: Commit**
 
 ```bash

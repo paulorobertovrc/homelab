@@ -30,10 +30,17 @@ tunnel: $tunnelId
 credentials-file: $credFile
 ingress:
   - hostname: breakglass.gab.ia.br
-    # 100.64.0.3, não 127.0.0.1: o sshd (Task 4) escuta só no IP de tailnet
-    # (ListenAddress 100.64.0.3), não no loopback -- confirmado ao vivo em
-    # 2026-08-01, "connection actively refused" apontando pro 127.0.0.1.
-    service: tcp://100.64.0.3:2222
+    # 127.0.0.1, não 100.64.0.3 (corrigido 2026-08-04): apontar o origin para
+    # o IP de tailnet fazia este canal depender do Tailscale do Windows estar
+    # de pé -- contradizendo a propriedade que justifica a Fase 3 inteira
+    # ("não depende de WSL, Headscale, Tailscale nem DERP"). Como a falha que
+    # o break-glass cobre é reboot sem logon, e é justamente aí que não se
+    # sabe se o Tailscale sobe, o canal podia morrer no seu próprio cenário.
+    # O sshd passou a bindar também no loopback (install-openssh.ps1) para
+    # permitir esta correção. Em 2026-08-01 a config original apontava para
+    # 127.0.0.1 e falhava com "connection actively refused" -- a causa era o
+    # sshd não escutar no loopback, não o loopback ser o alvo errado.
+    service: tcp://127.0.0.1:2222
     originRequest:
       access:
         required: true

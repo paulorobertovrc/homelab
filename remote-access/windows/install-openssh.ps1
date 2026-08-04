@@ -1,5 +1,6 @@
 # Rodar como Administrador no PC-PR.
-# Passo 1 de 2: instala o sshd, restringe o bind ao IP de tailnet.
+# Passo 1 de 2: instala o sshd e o binda em dois endereços — o IP de tailnet
+# (acesso normal) e o loopback (break-glass, ver abaixo).
 # NÃO desliga PasswordAuthentication ainda — isso só acontece em
 # disable-ssh-password.ps1, depois de confirmar que a chave pública
 # do MacBook autentica (evita lockout, mesma ordem usada no WSL).
@@ -23,8 +24,17 @@ $ErrorActionPreference = "Stop"
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 Set-Service -Name sshd -StartupType Automatic
 
+# ListenAddress 127.0.0.1 além do IP de tailnet: o break-glass
+# (cloudflared-breakglass.ps1) precisa alcançar este sshd SEM depender da
+# interface Tailscale. O cenário que o break-glass existe para cobrir é
+# reboot sem logon — exatamente o cenário em que não se sabe se o Tailscale
+# do Windows sobe. Com bind só em 100.64.0.3, o canal de socorro morre junto
+# com aquilo de que deveria ser independente; pior, o sshd nem inicia (falha
+# ao bindar, e o Windows não tem equivalente ao FreeBind do systemd que
+# resolve isso no lado WSL). O loopback sempre existe, então o serviço sobe
+# em qualquer condição. Adicionado 2026-08-04.
 $configPath = "$env:ProgramData\ssh\sshd_config"
-$insert = "Port 2222`r`nListenAddress 100.64.0.3`r`nPubkeyAuthentication yes`r`n`r`n"
+$insert = "Port 2222`r`nListenAddress 100.64.0.3`r`nListenAddress 127.0.0.1`r`nPubkeyAuthentication yes`r`n`r`n"
 $content = Get-Content $configPath -Raw
 if ($content -notmatch "(?m)^Port 2222") {
     $content = $content -replace "(?m)^Match Group administrators", "$insert`Match Group administrators"
@@ -33,4 +43,4 @@ if ($content -notmatch "(?m)^Port 2222") {
 
 & "C:\Windows\System32\OpenSSH\sshd.exe" -t
 Start-Service sshd
-Write-Output "sshd instalado, porta 2222, restrito a 100.64.0.3 — confirme com: Get-NetTCPConnection -LocalPort 2222 -State Listen"
+Write-Output "sshd instalado, porta 2222, bind em 100.64.0.3 + 127.0.0.1 — confirme com: Get-NetTCPConnection -LocalPort 2222 -State Listen"

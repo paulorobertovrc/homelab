@@ -1,7 +1,23 @@
 # Design: acesso remoto ao gabinete-host a partir do MacBook
 
-**Data:** 2026-08-01 · **Status:** especificado, não implementado
+**Data:** 2026-08-01 · **Status:** implementado (Fases 0–3), revalidado ao vivo em 2026-08-04
 **Scope owner:** `homelab/remote-access` (nova área; primeiro trabalho do repo)
+
+> **Medição da Fase 0 — executada em 2026-08-04**, do MacBook fora da LAN de casa
+> (a Fase 0 nunca havia sido registrada; o plano seguiu direto para a implementação).
+>
+> - `gabinete-host` (100.64.0.1): **só relaiado** — `via DERP(gab)`, 52–59ms,
+>   `direct connection not established`.
+> - `PC-PR` (100.64.0.3): **direta** — `189.58.124.237:41641`, 54ms, após um
+>   primeiro pong por DERP.
+> - Consequência para o risco central: o caminho até o WSL depende do DERP que
+>   roda **dentro** do WSL — circular, sem rota alternativa. O caminho até o
+>   Windows não tem essa dependência, o que dá alguma chance de o RDP/SSH do
+>   Windows sobreviver a uma queda do WSL (não confirmado: depende de netmap em
+>   cache e de o Tailscale do Windows rodar sem logon).
+> - A ACL descrita abaixo como "default-deny, só `tag:gabinete → tag:app-host:8443`"
+>   **não corresponde ao estado atual**: 22 (WSL), 2222 (Windows) e 3389 passam.
+>   Auditar a policy antes de confiar na descrição desta seção.
 
 ## Problema
 
